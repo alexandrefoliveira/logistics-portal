@@ -9,84 +9,57 @@ import {
   Alert,
   Avatar,
   Link,
-  Collapse,
 } from "@mui/material";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 
-// Extracted from Project Contacts.xlsx
-const AUTHORIZED_USERS = [
-  "llima@iceriversprings.com",
-  "cduncan@iceriversprings.com",
-  "jhorner@bmpextrusion.com",
-  "wlegere@bluemountainplastics.com",
-  "kstrehl@iceriversprings.com",
-  "conradwilliams@iceriversprings.com",
-  "dgagnon@iceriversprings.com",
-  "aelhourani@iceriversprings.com",
-  "sfonseca@iceriversprings.com",
-  "tparker@bluemountainplastics.com",
-  "vsoni@iceriversprings.com",
-];
-
-export default function Login({ setToken }) {
-  const [credentials, setCredentials] = useState({ email: "", password: "" });
+export default function Login({ setCurrentUser, setAuthMode }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [infoMessage, setInfoMessage] = useState("");
-  const [isForgotPassword, setIsForgotPassword] = useState(false);
-
-  const handleChange = (e) => {
-    setCredentials({ ...credentials, [e.target.name]: e.target.value });
-  };
+  const [loading, setLoading] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
-    setInfoMessage("");
 
-    // Pre-submission validation
-    if (!credentials.email || !credentials.password) {
+    if (!email || !password) {
       setError("Both email and password are required.");
       return;
     }
 
-    const normalizedEmail = credentials.email.toLowerCase().trim();
+    setLoading(true);
 
-    // Strict validation against the provided project contacts
-    if (!AUTHORIZED_USERS.includes(normalizedEmail)) {
+    try {
+      // 1. Make the real network request to your SQLite database
+      const response = await fetch("http://localhost:5000/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await response.json();
+
+      // 2. If the backend rejects the password, this catches it!
+      if (!response.ok) {
+        setError(data.error || "Invalid login credentials.");
+        setLoading(false);
+        return;
+      }
+
+      // 3. SUCCESS: Pass the real user data up to App.jsx to unlock the Dashboard
+      setCurrentUser({
+        id: data.user.id,
+        full_name: data.user.name,
+        email: data.user.email,
+        role: data.user.role,
+      });
+    } catch (err) {
+      console.error("Login fetch error:", err);
       setError(
-        "Unauthorized access. Your email is not on the approved project contacts list.",
+        "Unable to connect to the server. Is the Node.js backend running?",
       );
-      return;
+      setLoading(false);
     }
-
-    // TODO: Wire this up to the Node.js /api/login endpoint
-    // For now, we simulate a successful token retrieval
-    setToken("secure-jwt-mock-token");
-  };
-
-  const handleForgotPassword = async (e) => {
-    e.preventDefault();
-    setError("");
-    setInfoMessage("");
-
-    if (!credentials.email) {
-      setError(
-        "Please enter your corporate email address to reset your password.",
-      );
-      return;
-    }
-
-    // TODO: Wire this up to the Node.js /api/forgot-password endpoint
-    setInfoMessage(
-      `If an account exists for ${credentials.email}, a reset link has been sent.`,
-    );
-  };
-
-  const toggleView = (e) => {
-    e.preventDefault();
-    setIsForgotPassword(!isForgotPassword);
-    setError("");
-    setInfoMessage("");
   };
 
   return (
@@ -99,82 +72,118 @@ export default function Login({ setToken }) {
           alignItems: "center",
         }}
       >
-        <Paper elevation={3} sx={{ p: 4, width: "100%", borderRadius: 2 }}>
-          <Box display="flex" flexDirection="column" alignItems="center" mb={3}>
-            <Avatar
-              sx={{ m: 1, bgcolor: "primary.main", width: 56, height: 56 }}
+        <Paper
+          elevation={0}
+          sx={{
+            p: 5,
+            width: "100%",
+            borderRadius: 4,
+            boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.05)",
+            border: "1px solid rgba(0,0,0,0.1)",
+          }}
+        >
+          <Box
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              mb: 4,
+            }}
+          >
+            <Box
+              sx={{
+                bgcolor: "primary.main",
+                color: "white",
+                p: 1.5,
+                borderRadius: 3,
+                mb: 2,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
             >
-              <LockOutlinedIcon fontSize="large" />
-            </Avatar>
-            <Typography component="h1" variant="h5" fontWeight="bold">
-              Logistics Portal
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {isForgotPassword
-                ? "Password Recovery"
-                : "Secure Access Required"}
+              <LocalShippingIcon sx={{ fontSize: 32 }} />
+            </Box>
+            <Typography
+              component="h1"
+              variant="h5"
+              color="primary"
+              fontWeight="bold"
+            >
+              Sign in to Logistics Portal
             </Typography>
           </Box>
 
           {error && (
-            <Alert severity="error" sx={{ mb: 2 }}>
+            <Alert severity="error" sx={{ mb: 3 }}>
               {error}
             </Alert>
           )}
-          {infoMessage && (
-            <Alert severity="success" sx={{ mb: 2 }}>
-              {infoMessage}
-            </Alert>
-          )}
 
-          <Box
-            component="form"
-            onSubmit={isForgotPassword ? handleForgotPassword : handleLogin}
-            noValidate
-          >
+          <Box component="form" onSubmit={handleLogin} noValidate>
             <TextField
               margin="normal"
               required
               fullWidth
-              label="Corporate Email Address"
+              label="Corporate Email"
               name="email"
+              type="email"
               autoComplete="email"
               autoFocus
-              value={credentials.email}
-              onChange={handleChange}
-              error={!!error && !credentials.email}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={loading}
+              sx={{ mb: 2 }}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="password"
+              label="Password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={loading}
             />
 
-            <Collapse in={!isForgotPassword}>
-              <TextField
-                margin="normal"
-                required={!isForgotPassword}
-                fullWidth
-                name="password"
-                label="Password"
-                type="password"
-                autoComplete="current-password"
-                value={credentials.password}
-                onChange={handleChange}
-                error={!!error && !credentials.password && !isForgotPassword}
-              />
-            </Collapse>
+            {/* Forgot Password Link */}
+            {setAuthMode && (
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  mt: 1,
+                  mb: 1,
+                }}
+              >
+                <Link
+                  component="button"
+                  type="button"
+                  variant="body2"
+                  onClick={() => setAuthMode("forgot")}
+                  sx={{
+                    fontWeight: 600,
+                    color: "primary.main",
+                    textDecoration: "none",
+                  }}
+                >
+                  Forgot Password?
+                </Link>
+              </Box>
+            )}
 
             <Button
               type="submit"
               fullWidth
               variant="contained"
               size="large"
-              sx={{ mt: 3, mb: 2, py: 1.5, fontWeight: "bold" }}
+              disabled={loading}
+              sx={{ mt: 2, mb: 3, py: 1.8, fontWeight: "bold" }}
             >
-              {isForgotPassword ? "Send Reset Link" : "Sign In"}
+              {loading ? "Verifying..." : "Sign In"}
             </Button>
-
-            <Box textAlign="center" mt={1}>
-              <Link component="button" variant="body2" onClick={toggleView}>
-                {isForgotPassword ? "Return to Sign In" : "Forgot Password?"}
-              </Link>
-            </Box>
           </Box>
         </Paper>
       </Box>

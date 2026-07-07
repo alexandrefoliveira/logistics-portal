@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   ThemeProvider,
   createTheme,
@@ -15,7 +15,6 @@ import {
   MenuItem,
   Card,
   TextField,
-  Alert,
   Drawer,
   List,
   ListItem,
@@ -25,7 +24,6 @@ import {
   Divider,
   IconButton,
   Badge,
-  Link,
   Table,
   TableBody,
   TableCell,
@@ -41,6 +39,7 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  Alert,
 } from "@mui/material";
 
 import {
@@ -65,8 +64,6 @@ import AssignmentIcon from "@mui/icons-material/Assignment";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import PeopleIcon from "@mui/icons-material/People";
 import LogoutIcon from "@mui/icons-material/Logout";
-import EmailOutlinedIcon from "@mui/icons-material/EmailOutlined";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
@@ -74,6 +71,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import SendIcon from "@mui/icons-material/Send";
 
 // Import Custom Components
+import Login from "./components/Login";
 import ChangePassword from "./components/ChangePassword";
 import ResetPassword from "./components/ResetPassword";
 
@@ -121,7 +119,7 @@ const CARRIER_EQUIP = [
   "Ocean Container",
 ];
 
-// Mock Data
+// Mock Data for Transfers (To be replaced with database later)
 const mockTransfers = [
   {
     id: "TRX-8902",
@@ -161,40 +159,12 @@ const mockTransfers = [
   },
 ];
 
-const mockUsers = [
-  {
-    id: 1,
-    full_name: "Alexandre Oliveira",
-    email: "aoliveira@iceriversprings.com",
-    role: "Admin",
-    created_at: "2026-01-15T00:00:00Z",
-  },
-  {
-    id: 2,
-    full_name: "John Fudge",
-    email: "jfudge@iceriversprings.com",
-    role: "Executive",
-    created_at: "2026-02-20T00:00:00Z",
-  },
-  {
-    id: 3,
-    full_name: "New User",
-    email: "newuser@iceriversprings.com",
-    role: "Requester",
-    created_at: "2026-07-01T00:00:00Z",
-  },
-];
-
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeView, setActiveView] = useState("Dashboard");
 
-  // Auth State (login, register, or forgot)
+  // Auth State ("login" or "forgot")
   const [authMode, setAuthMode] = useState("login");
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [authError, setAuthError] = useState("");
 
   // Dialog States
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
@@ -223,15 +193,35 @@ export default function App() {
     latest: false,
   });
 
+  // Dynamic User List State
+  const [usersList, setUsersList] = useState([]);
+
   // Feature states
-  const [usersList, setUsersList] = useState(mockUsers);
   const [equipFile, setEquipFile] = useState(null);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [selectedTransfer, setSelectedTransfer] = useState(null);
   const [updatesMap, setUpdatesMap] = useState({});
   const [newUpdateText, setNewUpdateText] = useState("");
 
+  // Fetch real users from the database when the User Management tab is clicked
+  useEffect(() => {
+    if (currentUser?.role === "Admin" && activeView === "User Management") {
+      fetch("http://localhost:5000/api/users")
+        .then((response) => response.json())
+        .then((data) => {
+          // Map the data to add a fallback created_at date since we didn't add it to SQLite yet
+          const formattedData = data.map((user) => ({
+            ...user,
+            created_at: new Date().toISOString(),
+          }));
+          setUsersList(formattedData);
+        })
+        .catch((err) => console.error("Error fetching users:", err));
+    }
+  }, [activeView, currentUser]);
+
   const handleRoleChange = (userId, newRole) => {
+    // Updates UI locally. Future TODO: Make a PUT request to save this role change in the database.
     setUsersList(
       usersList.map((u) => (u.id === userId ? { ...u, role: newRole } : u)),
     );
@@ -257,25 +247,6 @@ export default function App() {
       [selectedTransfer.id]: [update, ...(prev[selectedTransfer.id] || [])],
     }));
     setNewUpdateText("");
-  };
-
-  const handleAuthSubmit = (e) => {
-    e.preventDefault();
-    setAuthError("");
-
-    if (email.includes("@iceriversprings.com") || email.includes("@bmpp.com")) {
-      setCurrentUser({
-        id: 1,
-        full_name: authMode === "register" ? fullName : "Alexandre Oliveira",
-        email: email,
-        role: authMode === "register" ? "Requester" : "Admin",
-      });
-      setActiveView("Dashboard");
-    } else {
-      setAuthError(
-        "Access Denied: Only authorized corporate domains are allowed.",
-      );
-    }
   };
 
   const handleLogout = () => {
@@ -316,6 +287,7 @@ export default function App() {
     { name: "Completed", Transfers: 15 },
   ];
 
+  // --- UNAUTHENTICATED VIEW (Login & Forgot Password) ---
   if (!currentUser) {
     return (
       <ThemeProvider theme={theme}>
@@ -335,184 +307,31 @@ export default function App() {
             p: 2,
           }}
         >
-          <Card
-            elevation={0}
-            sx={{
-              maxWidth: 440,
-              width: "100%",
-              p: 5,
-              borderRadius: 4,
-              boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.05)",
-              border: "1px solid rgba(255,255,255,0.8)",
-              background: "rgba(255,255,255,0.95)",
-              backdropFilter: "blur(10px)",
-            }}
-          >
-            {authMode === "forgot" ? (
+          {authMode === "forgot" ? (
+            <Card
+              elevation={0}
+              sx={{
+                maxWidth: 440,
+                width: "100%",
+                p: 5,
+                borderRadius: 4,
+                boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.05)",
+                border: "1px solid rgba(255,255,255,0.8)",
+                background: "rgba(255,255,255,0.95)",
+                backdropFilter: "blur(10px)",
+              }}
+            >
               <ResetPassword setAuthMode={setAuthMode} />
-            ) : (
-              <>
-                <Box
-                  sx={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    mb: 5,
-                  }}
-                >
-                  <Box
-                    sx={{
-                      bgcolor: "primary.main",
-                      color: "white",
-                      p: 1.5,
-                      borderRadius: 3,
-                      mb: 2,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
-                  >
-                    <LocalShippingIcon sx={{ fontSize: 32 }} />
-                  </Box>
-                  <Typography variant="h5" color="primary" align="center">
-                    {authMode === "register"
-                      ? "Create Logistics Account"
-                      : "Sign in to Logistics Portal"}
-                  </Typography>
-                </Box>
-
-                {authError && (
-                  <Alert severity="error" sx={{ mb: 3 }}>
-                    {authError}
-                  </Alert>
-                )}
-
-                <form onSubmit={handleAuthSubmit}>
-                  <Box
-                    sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}
-                  >
-                    {authMode === "register" && (
-                      <TextField
-                        placeholder="Full Name"
-                        variant="outlined"
-                        fullWidth
-                        required
-                        value={fullName}
-                        onChange={(e) => setFullName(e.target.value)}
-                        InputProps={{
-                          startAdornment: (
-                            <PeopleIcon
-                              sx={{ mr: 1, color: "text.secondary" }}
-                            />
-                          ),
-                        }}
-                      />
-                    )}
-                    <TextField
-                      placeholder="name@iceriversprings.com"
-                      variant="outlined"
-                      fullWidth
-                      type="email"
-                      required
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      InputProps={{
-                        startAdornment: (
-                          <EmailOutlinedIcon
-                            sx={{ mr: 1, color: "text.secondary" }}
-                          />
-                        ),
-                      }}
-                    />
-                    <TextField
-                      placeholder="••••••••"
-                      variant="outlined"
-                      fullWidth
-                      type="password"
-                      required
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      InputProps={{
-                        startAdornment: (
-                          <LockOutlinedIcon
-                            sx={{ mr: 1, color: "text.secondary" }}
-                          />
-                        ),
-                      }}
-                    />
-
-                    {authMode === "login" && (
-                      <Box
-                        sx={{
-                          display: "flex",
-                          justifyContent: "flex-end",
-                          mt: -1,
-                          mb: 1,
-                        }}
-                      >
-                        <Link
-                          component="button"
-                          type="button"
-                          variant="body2"
-                          onClick={() => setAuthMode("forgot")}
-                          sx={{
-                            fontWeight: 600,
-                            color: "primary.main",
-                            textDecoration: "none",
-                            "&:hover": { textDecoration: "underline" },
-                          }}
-                        >
-                          Forgot Password?
-                        </Link>
-                      </Box>
-                    )}
-
-                    <Button
-                      type="submit"
-                      variant="contained"
-                      size="large"
-                      sx={{ py: 1.8 }}
-                    >
-                      {authMode === "register" ? "Create Account" : "Sign In"}
-                    </Button>
-
-                    <Typography
-                      variant="body2"
-                      align="center"
-                      color="text.secondary"
-                    >
-                      {authMode === "register"
-                        ? "Already have an account? "
-                        : "Don't have an account? "}
-                      <Link
-                        component="button"
-                        type="button"
-                        onClick={() => {
-                          setAuthMode(
-                            authMode === "register" ? "login" : "register",
-                          );
-                          setAuthError("");
-                        }}
-                        sx={{
-                          fontWeight: 600,
-                          color: "primary.main",
-                          textDecoration: "none",
-                          "&:hover": { textDecoration: "underline" },
-                        }}
-                      >
-                        {authMode === "register" ? "Sign In" : "Sign Up"}
-                      </Link>
-                    </Typography>
-                  </Box>
-                </form>
-              </>
-            )}
-          </Card>
+            </Card>
+          ) : (
+            <Login setCurrentUser={setCurrentUser} setAuthMode={setAuthMode} />
+          )}
         </Box>
       </ThemeProvider>
     );
   }
 
+  // --- AUTHENTICATED VIEW (Dashboard) ---
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -600,7 +419,9 @@ export default function App() {
                 <Avatar
                   sx={{ bgcolor: "secondary.main", width: 32, height: 32 }}
                 >
-                  {currentUser.full_name.charAt(0)}
+                  {currentUser.full_name
+                    ? currentUser.full_name.charAt(0)
+                    : "U"}
                 </Avatar>
                 <Box>
                   <Typography variant="body2" fontWeight="bold">
@@ -1380,7 +1201,7 @@ export default function App() {
                         Back
                       </Button>
                     ) : (
-                      <Box /> // Empty box to keep the "Next" button pushed to the right
+                      <Box />
                     )}
                     <Button
                       variant="contained"
@@ -1554,7 +1375,7 @@ export default function App() {
                         <TextField
                           fullWidth
                           size="small"
-                          placeholder="Post a comment, delivery note, or status update..."
+                          placeholder="Post a comment..."
                           value={newUpdateText}
                           onChange={(e) => setNewUpdateText(e.target.value)}
                           multiline
@@ -1640,7 +1461,7 @@ export default function App() {
               )}
             </Dialog>
 
-            {/* NEW: CHANGE PASSWORD MODAL */}
+            {/* CHANGE PASSWORD MODAL */}
             <ChangePassword
               open={isChangePasswordOpen}
               onClose={() => setIsChangePasswordOpen(false)}

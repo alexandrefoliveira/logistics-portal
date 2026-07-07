@@ -1,109 +1,93 @@
-CREATE TABLE IF NOT EXISTS users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    full_name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL,
-    role ENUM(
-        'Admin',
-        'Logistics',
-        'Department Manager',
-        'Supply Chain',
-        'Demand Planning',
-        'Customer Service',
-        'Requester',
-        'Read-Only'
-    ) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- FORCE SCHEMA UPDATE: Drop the old table so it rebuilds with the password column
+DROP TABLE IF EXISTS users;
+
+-- 1. Users & Contacts Table
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    email TEXT UNIQUE,
+    department TEXT,
+    role TEXT DEFAULT 'Requester',
+    password TEXT
 );
 
-CREATE TABLE IF NOT EXISTS plants (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    plant_name VARCHAR(100) NOT NULL,
-    plant_manager_id INT,
-    FOREIGN KEY (plant_manager_id) REFERENCES users (id)
+-- 2. Master Transfer Requests Table
+CREATE TABLE IF NOT EXISTS transfer_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submitted_by TEXT,
+    department TEXT,
+    origin_name TEXT,
+    origin_address TEXT,
+    origin_attn TEXT,
+    destination_name TEXT,
+    destination_address TEXT,
+    destination_attn TEXT,
+    shipping_earliest TEXT,
+    shipping_latest TEXT,
+    receiving_earliest TEXT,
+    receiving_latest TEXT,
+    status TEXT DEFAULT 'Pending Department Approval',
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS trials (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    trial_ref VARCHAR(20) UNIQUE,
-    title VARCHAR(255) NOT NULL,
-    initiator_id INT,
-    target_plant_id INT,
-    product_category VARCHAR(100),
-    suppliers_involved TEXT,
-    scope_of_trial TEXT,
-    business_case TEXT,
-    target_date DATE,
-    scheduled_start DATE DEFAULT NULL,
-    scheduled_end DATE DEFAULT NULL,
-    status ENUM(
-        'PENDING_QUOTE',
-        'PENDING_MANAGER_APPROVAL',
-        'PENDING_SUPPLY_CHAIN_APPROVAL',
-        'PENDING_CONDITIONAL_APPROVAL',
-        'READY_FOR_DISPATCH',
-        'IN_TRANSIT',
-        'COMPLETED',
-        'REJECTED'
-    ) DEFAULT 'PENDING_QUOTE',
-    initial_exec_comment TEXT,
-    value_conf_comment TEXT,
-    plant_mgr_comment TEXT,
-    planning_comment TEXT,
-    final_exec_comment TEXT,
-    qa_closeout_comment TEXT,
-    quality_notes TEXT,
-    qa_checklist JSON,
-    executive_id INT,
-    plant_manager_id INT,
-    quality_id INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (initiator_id) REFERENCES users (id),
-    FOREIGN KEY (target_plant_id) REFERENCES plants (id)
+-- 3. Material Move Grid Items (Child Table)
+CREATE TABLE IF NOT EXISTS material_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER,
+    material_number TEXT,
+    description TEXT,
+    pallets INTEGER,
+    pallet_positions INTEGER,
+    weight REAL,
+    dimensions TEXT,
+    FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS trial_updates (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    trial_id INT NOT NULL,
-    user_id INT NOT NULL,
-    update_text TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (trial_id) REFERENCES trials (id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users (id)
+-- 4. Equipment & Project Move Grid Items (Child Table)
+CREATE TABLE IF NOT EXISTS equipment_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER,
+    project_code TEXT,
+    hs_code TEXT,      
+    description TEXT,
+    pallets INTEGER,
+    pallet_positions INTEGER,
+    weight REAL,
+    dimensions TEXT,
+    unit_value REAL,
+    manufacturer TEXT,
+    serial_number TEXT,
+    country_of_origin TEXT,
+    FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS trial_files (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    trial_id INT NOT NULL,
-    uploader_id INT NOT NULL,
-    file_name VARCHAR(255) NOT NULL,
-    original_name VARCHAR(255) NOT NULL,
-    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (trial_id) REFERENCES trials (id) ON DELETE CASCADE,
-    FOREIGN KEY (uploader_id) REFERENCES users (id)
+-- 5. Complete Live Timeline Audit Log
+CREATE TABLE IF NOT EXISTS approval_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER,
+    approver_email TEXT,
+    action TEXT, 
+    comments TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE
 );
 
--- Force update in case the table is cached
-ALTER TABLE users
-MODIFY COLUMN role ENUM(
-    'Admin',
-    'Logistics',
-    'Department Manager',
-    'Supply Chain',
-    'Demand Planning',
-    'Customer Service',
-    'Requester',
-    'Read-Only'
-) NOT NULL;
-
-ALTER TABLE trials
-MODIFY COLUMN status ENUM(
-    'PENDING_QUOTE',
-    'PENDING_MANAGER_APPROVAL',
-    'PENDING_SUPPLY_CHAIN_APPROVAL',
-    'PENDING_CONDITIONAL_APPROVAL',
-    'READY_FOR_DISPATCH',
-    'IN_TRANSIT',
-    'COMPLETED',
-    'REJECTED'
-) DEFAULT 'PENDING_QUOTE';
+-- 6. Seed Initial Authorized Users with Default Passwords
+-- (Removed IGNORE so it guarantees a fresh injection into our newly built table)
+INSERT INTO users (name, email, role, password) VALUES 
+    ('Alexandre Oliveira', 'aoliveira@iceriversprings.com', 'Admin', 'AOliveira@2026!'),
+    ('Livia Lima', 'llima@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Colin Duncan', 'cduncan@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Jennifer Horner', 'jhorner@bmpextrusion.com', 'Requester', 'IceRiver@2026!'),
+    ('William Legere', 'wlegere@bluemountainplastics.com', 'Requester', 'IceRiver@2026!'),
+    ('Kyle Strehl', 'kstrehl@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Conrad Williams', 'conradwilliams@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Daniel Gagnon', 'dgagnon@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Ali El-Hourani', 'aelhourani@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Stephanie Fonseca', 'sfonseca@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Tara Parker', 'tparker@bluemountainplastics.com', 'Requester', 'IceRiver@2026!'),
+    ('Vismay Soni', 'vsoni@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Renan Lucena', 'rlucena@crplastics.com', 'Requester', 'IceRiver@2026!'),
+    ('Durid Awaad', 'dawaad@iceriversprings.com', 'Plant Manager', 'IceRiver@2026!'),
+    ('Bill Harper', 'bharper@iceriversprings.com', 'Requester', 'IceRiver@2026!'),
+    ('Logistics', 'logistics@iceriversprings.com', 'Dispatcher', 'IceRiver@2026!');
