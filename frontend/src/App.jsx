@@ -73,9 +73,13 @@ import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import SendIcon from "@mui/icons-material/Send";
 
+// Import Custom Components
+import ChangePassword from "./components/ChangePassword";
+import ResetPassword from "./components/ResetPassword";
+
 const theme = createTheme({
   palette: {
-    primary: { main: "#0A2540" }, // Deep Navy from Trial Portal
+    primary: { main: "#0A2540" },
     secondary: { main: "#007BFF" },
     background: { default: "#F8FAFC", paper: "#FFFFFF" },
     success: { main: "#10B981" },
@@ -185,14 +189,15 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeView, setActiveView] = useState("Dashboard");
 
-  // Auth State
-  const [isRegistering, setIsRegistering] = useState(false);
+  // Auth State (login, register, or forgot)
+  const [authMode, setAuthMode] = useState("login");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
 
-  // Notification Menu
+  // Dialog States
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [notificationAnchorEl, setNotificationAnchorEl] = useState(null);
 
   // Equipment Wizard State
@@ -213,7 +218,6 @@ export default function App() {
     carrier: "",
   });
 
-  // Track focus for the date fields to manage the floating labels
   const [dateFocus, setDateFocus] = useState({
     earliest: false,
     latest: false,
@@ -259,14 +263,12 @@ export default function App() {
     e.preventDefault();
     setAuthError("");
 
-    // In a real app, this calls the backend.
-    // We default new signups to 'Requester' for Logistics.
     if (email.includes("@iceriversprings.com") || email.includes("@bmpp.com")) {
       setCurrentUser({
         id: 1,
-        full_name: isRegistering ? fullName : "Alexandre Oliveira",
+        full_name: authMode === "register" ? fullName : "Alexandre Oliveira",
         email: email,
-        role: isRegistering ? "Requester" : "Admin",
+        role: authMode === "register" ? "Requester" : "Admin",
       });
       setActiveView("Dashboard");
     } else {
@@ -280,18 +282,19 @@ export default function App() {
     setCurrentUser(null);
     setActiveView("Dashboard");
     setEquipStep(0);
+    setAuthMode("login");
   };
 
   const getStatusColor = (status) => {
     switch (status) {
       case "APPROVED":
-        return "info"; // Changed to Blue
+        return "info";
       case "PENDING_QUOTE":
         return "warning";
       case "IN_TRANSIT":
-        return "primary"; // Changed to Navy
+        return "primary";
       case "COMPLETED":
-        return "success"; // Changed to Green
+        return "success";
       case "REJECTED":
         return "error";
       default:
@@ -299,7 +302,6 @@ export default function App() {
     }
   };
 
-  // Chart Data Calculations
   const facilityData = [
     { name: "Shelburne", value: 12 },
     { name: "Grafton", value: 5 },
@@ -346,153 +348,165 @@ export default function App() {
               backdropFilter: "blur(10px)",
             }}
           >
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                mb: 5,
-              }}
-            >
-              <Box
-                sx={{
-                  bgcolor: "primary.main",
-                  color: "white",
-                  p: 1.5,
-                  borderRadius: 3, // Modern rounded square instead of circle
-                  mb: 2,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <LocalShippingIcon sx={{ fontSize: 32 }} />
-              </Box>
-              <Typography variant="h5" color="primary" align="center">
-                {isRegistering
-                  ? "Create Logistics Account"
-                  : "Sign in to Logistics Portal"}
-              </Typography>
-            </Box>
-
-            {authError && (
-              <Alert severity="error" sx={{ mb: 3 }}>
-                {authError}
-              </Alert>
-            )}
-
-            <form onSubmit={handleAuthSubmit}>
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-                {isRegistering && (
-                  <TextField
-                    placeholder="Full Name"
-                    variant="outlined"
-                    fullWidth
-                    required
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    InputProps={{
-                      startAdornment: (
-                        <PeopleIcon sx={{ mr: 1, color: "text.secondary" }} />
-                      ),
-                    }}
-                  />
-                )}
-                <TextField
-                  placeholder="name@iceriversprings.com"
-                  variant="outlined"
-                  fullWidth
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  InputProps={{
-                    startAdornment: (
-                      <EmailOutlinedIcon
-                        sx={{ mr: 1, color: "text.secondary" }}
-                      />
-                    ),
+            {authMode === "forgot" ? (
+              <ResetPassword setAuthMode={setAuthMode} />
+            ) : (
+              <>
+                <Box
+                  sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    mb: 5,
                   }}
-                />
-                <TextField
-                  placeholder="••••••••"
-                  variant="outlined"
-                  fullWidth
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  InputProps={{
-                    startAdornment: (
-                      <LockOutlinedIcon
-                        sx={{ mr: 1, color: "text.secondary" }}
-                      />
-                    ),
-                  }}
-                />
-
-                {!isRegistering && (
+                >
                   <Box
                     sx={{
+                      bgcolor: "primary.main",
+                      color: "white",
+                      p: 1.5,
+                      borderRadius: 3,
+                      mb: 2,
                       display: "flex",
-                      justifyContent: "flex-end",
-                      mt: -1,
-                      mb: 1,
+                      alignItems: "center",
+                      justifyContent: "center",
                     }}
                   >
-                    <Link
-                      component="button"
-                      type="button"
-                      variant="body2"
-                      onClick={() => {}}
-                      sx={{
-                        fontWeight: 600,
-                        color: "primary.main",
-                        textDecoration: "none",
-                        "&:hover": { textDecoration: "underline" },
-                      }}
-                    >
-                      Forgot Password?
-                    </Link>
+                    <LocalShippingIcon sx={{ fontSize: 32 }} />
                   </Box>
+                  <Typography variant="h5" color="primary" align="center">
+                    {authMode === "register"
+                      ? "Create Logistics Account"
+                      : "Sign in to Logistics Portal"}
+                  </Typography>
+                </Box>
+
+                {authError && (
+                  <Alert severity="error" sx={{ mb: 3 }}>
+                    {authError}
+                  </Alert>
                 )}
 
-                <Button
-                  type="submit"
-                  variant="contained"
-                  size="large"
-                  sx={{ py: 1.8 }}
-                >
-                  {isRegistering ? "Create Account" : "Sign In"}
-                </Button>
-
-                <Typography
-                  variant="body2"
-                  align="center"
-                  color="text.secondary"
-                >
-                  {isRegistering
-                    ? "Already have an account? "
-                    : "Don't have an account? "}
-                  <Link
-                    component="button"
-                    type="button"
-                    onClick={() => {
-                      setIsRegistering(!isRegistering);
-                      setAuthError("");
-                    }}
-                    sx={{
-                      fontWeight: 600,
-                      color: "primary.main",
-                      textDecoration: "none",
-                      "&:hover": { textDecoration: "underline" },
-                    }}
+                <form onSubmit={handleAuthSubmit}>
+                  <Box
+                    sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}
                   >
-                    {isRegistering ? "Sign In" : "Sign Up"}
-                  </Link>
-                </Typography>
-              </Box>
-            </form>
+                    {authMode === "register" && (
+                      <TextField
+                        placeholder="Full Name"
+                        variant="outlined"
+                        fullWidth
+                        required
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        InputProps={{
+                          startAdornment: (
+                            <PeopleIcon
+                              sx={{ mr: 1, color: "text.secondary" }}
+                            />
+                          ),
+                        }}
+                      />
+                    )}
+                    <TextField
+                      placeholder="name@iceriversprings.com"
+                      variant="outlined"
+                      fullWidth
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      InputProps={{
+                        startAdornment: (
+                          <EmailOutlinedIcon
+                            sx={{ mr: 1, color: "text.secondary" }}
+                          />
+                        ),
+                      }}
+                    />
+                    <TextField
+                      placeholder="••••••••"
+                      variant="outlined"
+                      fullWidth
+                      type="password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      InputProps={{
+                        startAdornment: (
+                          <LockOutlinedIcon
+                            sx={{ mr: 1, color: "text.secondary" }}
+                          />
+                        ),
+                      }}
+                    />
+
+                    {authMode === "login" && (
+                      <Box
+                        sx={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          mt: -1,
+                          mb: 1,
+                        }}
+                      >
+                        <Link
+                          component="button"
+                          type="button"
+                          variant="body2"
+                          onClick={() => setAuthMode("forgot")}
+                          sx={{
+                            fontWeight: 600,
+                            color: "primary.main",
+                            textDecoration: "none",
+                            "&:hover": { textDecoration: "underline" },
+                          }}
+                        >
+                          Forgot Password?
+                        </Link>
+                      </Box>
+                    )}
+
+                    <Button
+                      type="submit"
+                      variant="contained"
+                      size="large"
+                      sx={{ py: 1.8 }}
+                    >
+                      {authMode === "register" ? "Create Account" : "Sign In"}
+                    </Button>
+
+                    <Typography
+                      variant="body2"
+                      align="center"
+                      color="text.secondary"
+                    >
+                      {authMode === "register"
+                        ? "Already have an account? "
+                        : "Don't have an account? "}
+                      <Link
+                        component="button"
+                        type="button"
+                        onClick={() => {
+                          setAuthMode(
+                            authMode === "register" ? "login" : "register",
+                          );
+                          setAuthError("");
+                        }}
+                        sx={{
+                          fontWeight: 600,
+                          color: "primary.main",
+                          textDecoration: "none",
+                          "&:hover": { textDecoration: "underline" },
+                        }}
+                      >
+                        {authMode === "register" ? "Sign In" : "Sign Up"}
+                      </Link>
+                    </Typography>
+                  </Box>
+                </form>
+              </>
+            )}
           </Card>
         </Box>
       </ThemeProvider>
@@ -661,7 +675,6 @@ export default function App() {
               },
             )}
 
-            {/* User Management is usually Admin only */}
             {currentUser.role === "Admin" && (
               <ListItem
                 selected={activeView === "User Management"}
@@ -688,6 +701,7 @@ export default function App() {
               fullWidth
               variant="outlined"
               color="inherit"
+              onClick={() => setIsChangePasswordOpen(true)}
               startIcon={<VpnKeyIcon />}
               sx={{ borderColor: "rgba(255,255,255,0.3)", color: "white" }}
             >
@@ -779,7 +793,7 @@ export default function App() {
                         flex: 1,
                         minWidth: 250,
                         p: 3,
-                        borderRadius: "40px", // Premium Pill Shape
+                        borderRadius: "40px",
                         border: "1px solid #E2E8F0",
                         display: "flex",
                         justifyContent: "space-between",
@@ -1625,6 +1639,13 @@ export default function App() {
                 </>
               )}
             </Dialog>
+
+            {/* NEW: CHANGE PASSWORD MODAL */}
+            <ChangePassword
+              open={isChangePasswordOpen}
+              onClose={() => setIsChangePasswordOpen(false)}
+              userEmail={currentUser?.email}
+            />
           </Container>
         </Box>
       </Box>

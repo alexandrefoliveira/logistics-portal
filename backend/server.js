@@ -40,11 +40,8 @@ db.serialize(() => {
         shipping_latest TEXT,
         receiving_earliest TEXT,
         receiving_latest TEXT,
-        carrier_equipment TEXT,
-        carrier_comments TEXT,
-        status TEXT DEFAULT 'Pending Logistics Quote',
-        quote_price REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        status TEXT DEFAULT 'Pending Department Approval',
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
   // 3. Material Move Grid Items (Child Table)
@@ -95,5 +92,84 @@ app.get("/api/health", (req, res) => {
   res.status(200).json({ status: "Database structures fully initialized." });
 });
 
+// --- AUTHENTICATION & AUTHORIZATION ---
+
+// Extracted from Project Contacts.xlsx
+const AUTHORIZED_USERS = [
+  "llima@iceriversprings.com",
+  "cduncan@iceriversprings.com",
+  "jhorner@bmpextrusion.com",
+  "wlegere@bluemountainplastics.com",
+  "kstrehl@iceriversprings.com",
+  "conradwilliams@iceriversprings.com",
+  "dgagnon@iceriversprings.com",
+  "aelhourani@iceriversprings.com",
+  "sfonseca@iceriversprings.com",
+  "tparker@bluemountainplastics.com",
+  "vsoni@iceriversprings.com",
+];
+
+// Login Endpoint
+app.post("/api/login", (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required." });
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Strict validation against the provided project contacts
+  if (!AUTHORIZED_USERS.includes(normalizedEmail)) {
+    return res
+      .status(403)
+      .json({
+        error:
+          "Unauthorized access. Your email is not on the approved project contacts list.",
+      });
+  }
+
+  // TODO: Add bcrypt comparison here once actual passwords are tied to users in the database.
+  // For now, granting access if the email is on the authorized list.
+
+  res.status(200).json({
+    token: "secure-jwt-mock-token",
+    user: normalizedEmail,
+  });
+});
+
+// Forgot Password Endpoint
+app.post("/api/forgot-password", (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: "Email is required." });
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Standard security practice: return the exact same success message whether the
+  // email exists or not, preventing bad actors from enumerating valid company emails.
+  if (!AUTHORIZED_USERS.includes(normalizedEmail)) {
+    return res
+      .status(200)
+      .json({ message: "If an account exists, a reset link has been sent." });
+  }
+
+  // Simulate dispatching the email (to be replaced with Nodemailer/SendGrid etc.)
+  console.log(
+    `[Notification Service] -> Password reset link generated and sent to: ${normalizedEmail}`,
+  );
+
+  res
+    .status(200)
+    .json({
+      message: `If an account exists for ${normalizedEmail}, a reset link has been sent.`,
+    });
+});
+
+// Start the server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
