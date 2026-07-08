@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import axios from "axios";
 import {
   Dialog,
   DialogTitle,
@@ -10,7 +11,10 @@ import {
   Box,
 } from "@mui/material";
 
-export default function ChangePassword({ open, onClose, userEmail }) {
+// Ensure this matches your backend port!
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
+export default function ChangePassword({ open, onClose, currentUser }) {
   const [passwords, setPasswords] = useState({
     currentPassword: "",
     newPassword: "",
@@ -26,7 +30,8 @@ export default function ChangePassword({ open, onClose, userEmail }) {
     setPasswords({ ...passwords, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (e) => {
+    if (e) e.preventDefault(); // Prevent page refresh
     setStatus({ error: "", success: "", loading: true });
 
     if (passwords.newPassword !== passwords.confirmPassword) {
@@ -48,26 +53,46 @@ export default function ChangePassword({ open, onClose, userEmail }) {
     }
 
     try {
-      // TODO: Connect to Node.js /api/change-password endpoint
-      // const response = await fetch('/api/change-password', { ... })
+      // 1. Grab the security token saved during Login
+      const token = localStorage.getItem("logistics_token");
 
-      setStatus({
-        error: "",
-        success: "Password successfully updated.",
-        loading: false,
-      });
-      setTimeout(() => {
-        onClose();
-        setStatus({ error: "", success: "", loading: false });
-        setPasswords({
-          currentPassword: "",
-          newPassword: "",
-          confirmPassword: "",
+      // 2. Explicitly attach the token to the Axios headers
+      const response = await axios.put(
+        `${API_BASE_URL}/api/users/${currentUser?.id}/password`,
+        {
+          currentPassword: passwords.currentPassword,
+          newPassword: passwords.newPassword,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`, // This proves to the backend you are allowed to make changes!
+          },
+        },
+      );
+
+      if (response.data.status === "Success") {
+        setStatus({
+          error: "",
+          success: "Password successfully updated in the database!",
+          loading: false,
         });
-      }, 2000);
+
+        setTimeout(() => {
+          onClose();
+          setStatus({ error: "", success: "", loading: false });
+          setPasswords({
+            currentPassword: "",
+            newPassword: "",
+            confirmPassword: "",
+          });
+        }, 1500);
+      }
     } catch (err) {
+      console.error(err);
       setStatus({
         error:
+          err.response?.data?.message ||
+          err.response?.data?.error ||
           "Failed to update password. Please verify your current password.",
         success: "",
         loading: false,
@@ -83,13 +108,13 @@ export default function ChangePassword({ open, onClose, userEmail }) {
       fullWidth
       PaperProps={{ sx: { borderRadius: 3 } }}
     >
-      <DialogTitle
-        sx={{ fontWeight: "bold", bgcolor: "primary.main", color: "white" }}
-      >
-        Change Password
-      </DialogTitle>
-      <DialogContent sx={{ mt: 2 }}>
-        <Box component="form" sx={{ mt: 1 }}>
+      <form onSubmit={handleSubmit}>
+        <DialogTitle
+          sx={{ fontWeight: "bold", bgcolor: "primary.main", color: "white" }}
+        >
+          Change Password
+        </DialogTitle>
+        <DialogContent sx={{ mt: 2 }}>
           {status.error && (
             <Alert severity="error" sx={{ mb: 2 }}>
               {status.error}
@@ -101,50 +126,52 @@ export default function ChangePassword({ open, onClose, userEmail }) {
             </Alert>
           )}
 
-          <TextField
-            margin="normal"
-            required
-            fullWidth
-            label="Current Password"
-            name="currentPassword"
-            type="password"
-            value={passwords.currentPassword}
-            onChange={handleChange}
-          />
-          <TextField
-            margin="normal"
-            required
-            fullWidth
-            label="New Password"
-            name="newPassword"
-            type="password"
-            value={passwords.newPassword}
-            onChange={handleChange}
-          />
-          <TextField
-            margin="normal"
-            required
-            fullWidth
-            label="Confirm New Password"
-            name="confirmPassword"
-            type="password"
-            value={passwords.confirmPassword}
-            onChange={handleChange}
-          />
-        </Box>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 3 }}>
-        <Button onClick={onClose} color="inherit" disabled={status.loading}>
-          Cancel
-        </Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={status.loading}
-        >
-          Update Password
-        </Button>
-      </DialogActions>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
+            <TextField
+              required
+              fullWidth
+              label="Current Password"
+              name="currentPassword"
+              type="password"
+              value={passwords.currentPassword}
+              onChange={handleChange}
+              disabled={status.loading || !!status.success}
+            />
+            <TextField
+              required
+              fullWidth
+              label="New Password"
+              name="newPassword"
+              type="password"
+              value={passwords.newPassword}
+              onChange={handleChange}
+              disabled={status.loading || !!status.success}
+            />
+            <TextField
+              required
+              fullWidth
+              label="Confirm New Password"
+              name="confirmPassword"
+              type="password"
+              value={passwords.confirmPassword}
+              onChange={handleChange}
+              disabled={status.loading || !!status.success}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button onClick={onClose} color="inherit" disabled={status.loading}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="contained"
+            disabled={status.loading || !!status.success}
+          >
+            Update Password
+          </Button>
+        </DialogActions>
+      </form>
     </Dialog>
   );
 }

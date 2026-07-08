@@ -1,6 +1,17 @@
 version: '3.8'
 
 services:
+  db:
+    image: mysql:8.0
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: logistics.IceRiver@2026!
+      MYSQL_DATABASE: logistics_portal
+    volumes:
+      - mysql_data:/var/lib/mysql
+
   backend:
     build: ./backend
     ports:
@@ -10,9 +21,14 @@ services:
       - /app/node_modules
     environment:
       - PORT=5000
-      - NODE_ENV=development
-    # ADD THIS LINE: It forces the SQLite driver to compile for Linux on boot
-    command: sh -c "npm rebuild sqlite3 && npm run dev"
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=logistics.IceRiver@2026!
+      - DB_NAME=logistics_portal
+      - JWT_SECRET=super-secret-corporate-key-2026
+    command: npm run dev
+    depends_on:
+      - db
 
   frontend:
     build: ./frontend
@@ -25,3 +41,6 @@ services:
       - VITE_API_URL=http://localhost:5000
     depends_on:
       - backend
+
+volumes:
+  mysql_data:

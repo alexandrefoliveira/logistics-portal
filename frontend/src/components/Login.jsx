@@ -7,7 +7,6 @@ import {
   Button,
   Paper,
   Alert,
-  Avatar,
   Link,
 } from "@mui/material";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
@@ -30,7 +29,6 @@ export default function Login({ setCurrentUser, setAuthMode }) {
     setLoading(true);
 
     try {
-      // 1. Make the real network request to your SQLite database
       const response = await fetch("http://localhost:5000/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -39,20 +37,18 @@ export default function Login({ setCurrentUser, setAuthMode }) {
 
       const data = await response.json();
 
-      // 2. If the backend rejects the password, this catches it!
-      if (!response.ok) {
-        setError(data.error || "Invalid login credentials.");
+      if (!response.ok || data.status === "Error") {
+        setError(data.error || data.message || "Invalid login credentials.");
         setLoading(false);
         return;
       }
 
-      // 3. SUCCESS: Pass the real user data up to App.jsx to unlock the Dashboard
-      setCurrentUser({
-        id: data.user.id,
-        full_name: data.user.name,
-        email: data.user.email,
-        role: data.user.role,
-      });
+      // --- CRITICAL JWT SECURITY STEP ---
+      // Save the secure token to the browser so the user stays logged in
+      localStorage.setItem("logistics_token", data.token);
+
+      // Unlock the dashboard
+      setCurrentUser(data.user);
     } catch (err) {
       console.error("Login fetch error:", err);
       setError(
@@ -148,7 +144,6 @@ export default function Login({ setCurrentUser, setAuthMode }) {
               disabled={loading}
             />
 
-            {/* Forgot Password Link */}
             {setAuthMode && (
               <Box
                 sx={{

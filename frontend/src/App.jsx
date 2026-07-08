@@ -206,15 +206,18 @@ export default function App() {
   // Fetch real users from the database when the User Management tab is clicked
   useEffect(() => {
     if (currentUser?.role === "Admin" && activeView === "User Management") {
-      fetch("http://localhost:5000/api/users")
+      const token = localStorage.getItem("logistics_token");
+
+      fetch("http://localhost:5000/api/users", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
         .then((response) => response.json())
         .then((data) => {
-          // Map the data to add a fallback created_at date since we didn't add it to SQLite yet
-          const formattedData = data.map((user) => ({
-            ...user,
-            created_at: new Date().toISOString(),
-          }));
-          setUsersList(formattedData);
+          if (data.status === "Success" || Array.isArray(data.data)) {
+            setUsersList(data.data || data);
+          } else if (Array.isArray(data)) {
+            setUsersList(data);
+          }
         })
         .catch((err) => console.error("Error fetching users:", err));
     }
@@ -238,7 +241,7 @@ export default function App() {
     const timestamp = new Date().toLocaleString();
     const update = {
       id: Date.now(),
-      user_name: currentUser.full_name,
+      user_name: currentUser.name || currentUser.full_name,
       text: newUpdateText,
       date: timestamp,
     };
@@ -250,6 +253,8 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    // Clear the JWT security token from the browser
+    localStorage.removeItem("logistics_token");
     setCurrentUser(null);
     setActiveView("Dashboard");
     setEquipStep(0);
@@ -419,13 +424,13 @@ export default function App() {
                 <Avatar
                   sx={{ bgcolor: "secondary.main", width: 32, height: 32 }}
                 >
-                  {currentUser.full_name
-                    ? currentUser.full_name.charAt(0)
+                  {currentUser.name || currentUser.full_name
+                    ? (currentUser.name || currentUser.full_name).charAt(0)
                     : "U"}
                 </Avatar>
                 <Box>
                   <Typography variant="body2" fontWeight="bold">
-                    {currentUser.full_name}
+                    {currentUser.name || currentUser.full_name}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     {currentUser.role}
@@ -1251,10 +1256,12 @@ export default function App() {
                           <TableCell sx={{ fontWeight: 600 }}>
                             USR-{String(user.id).padStart(4, "0")}
                           </TableCell>
-                          <TableCell>{user.full_name}</TableCell>
+                          <TableCell>{user.full_name || user.name}</TableCell>
                           <TableCell>{user.email}</TableCell>
                           <TableCell>
-                            {new Date(user.created_at).toLocaleDateString()}
+                            {new Date(
+                              user.created_at || Date.now(),
+                            ).toLocaleDateString()}
                           </TableCell>
                           <TableCell>
                             <FormControl size="small" sx={{ minWidth: 150 }}>
@@ -1465,7 +1472,7 @@ export default function App() {
             <ChangePassword
               open={isChangePasswordOpen}
               onClose={() => setIsChangePasswordOpen(false)}
-              userEmail={currentUser?.email}
+              currentUser={currentUser}
             />
           </Container>
         </Box>
