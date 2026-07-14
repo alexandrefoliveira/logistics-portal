@@ -1,187 +1,229 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import {
-  Container,
   Box,
-  Typography,
-  TextField,
   Button,
-  Paper,
+  TextField,
+  Typography,
   Alert,
-  Link,
+  Card,
+  InputAdornment,
+  IconButton,
 } from "@mui/material";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
+import Visibility from "@mui/icons-material/Visibility";
+import VisibilityOff from "@mui/icons-material/VisibilityOff";
 
 export default function Login({ setCurrentUser, setAuthMode }) {
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Form State
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
-
-    if (!email || !password) {
-      setError("Both email and password are required.");
-      return;
-    }
-
     setLoading(true);
 
+    // Dynamically choose between the Login and Register APIs we built
+    const endpoint = isRegistering ? "/api/register" : "/api/login";
+    const payload = isRegistering
+      ? { fullName, email, password }
+      : { email, password };
+
     try {
-      const response = await fetch("http://localhost:5000/api/login", {
+      const response = await fetch(`http://localhost:5000${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(payload),
       });
 
       const data = await response.json();
 
-      if (!response.ok || data.status === "Error") {
-        setError(data.error || data.message || "Invalid login credentials.");
-        setLoading(false);
-        return;
+      if (data.status === "Success") {
+        // THE CRITICAL FIX: The token must be saved under "logistics_token"
+        // so App.jsx can find it and map the RBAC roles perfectly.
+        localStorage.setItem("logistics_token", data.token);
+        setCurrentUser(data.user);
+      } else {
+        setError(data.message || "Authentication failed. Please try again.");
       }
-
-      // --- CRITICAL JWT SECURITY STEP ---
-      // Save the secure token to the browser so the user stays logged in
-      localStorage.setItem("logistics_token", data.token);
-
-      // Unlock the dashboard
-      setCurrentUser(data.user);
     } catch (err) {
-      console.error("Login fetch error:", err);
-      setError(
-        "Unable to connect to the server. Is the Node.js backend running?",
-      );
+      setError("Failed to connect to the server. Please check your network.");
+    } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Container component="main" maxWidth="xs">
+    <Card
+      elevation={0}
+      sx={{
+        maxWidth: 440,
+        width: "100%",
+        p: { xs: 3, md: 5 },
+        borderRadius: 4,
+        boxShadow:
+          "0 20px 25px -5px rgb(0 0 0 / 0.05), 0 8px 10px -6px rgb(0 0 0 / 0.1)",
+        border: "1px solid rgba(255,255,255,0.8)",
+        background: "rgba(255,255,255,0.95)",
+        backdropFilter: "blur(10px)",
+      }}
+    >
       <Box
         sx={{
-          marginTop: 8,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
+          mb: 4,
         }}
       >
-        <Paper
-          elevation={0}
+        <Box
           sx={{
-            p: 5,
-            width: "100%",
-            borderRadius: 4,
-            boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.05)",
-            border: "1px solid rgba(0,0,0,0.1)",
+            bgcolor: "primary.main",
+            p: 1.5,
+            borderRadius: 3,
+            display: "flex",
+            mb: 2,
           }}
         >
-          <Box
-            sx={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              mb: 4,
-            }}
-          >
-            <Box
-              sx={{
-                bgcolor: "primary.main",
-                color: "white",
-                p: 1.5,
-                borderRadius: 3,
-                mb: 2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <LocalShippingIcon sx={{ fontSize: 32 }} />
-            </Box>
+          <LocalShippingIcon sx={{ color: "white", fontSize: 32 }} />
+        </Box>
+        <Typography
+          variant="h5"
+          color="primary"
+          fontWeight="bold"
+          textAlign="center"
+        >
+          Ice River Logistics
+        </Typography>
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          textAlign="center"
+          sx={{ mt: 1 }}
+        >
+          {isRegistering
+            ? "Create your corporate account."
+            : "Sign in to manage active network transfers."}
+        </Typography>
+      </Box>
+
+      <Box
+        component="form"
+        onSubmit={handleSubmit}
+        sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}
+      >
+        {error && (
+          <Alert severity="error" sx={{ borderRadius: 2 }}>
+            {error}
+          </Alert>
+        )}
+
+        {isRegistering && (
+          <TextField
+            label="Full Name"
+            variant="outlined"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            fullWidth
+            required={isRegistering}
+          />
+        )}
+
+        <TextField
+          label="Corporate Email"
+          type="email"
+          variant="outlined"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          fullWidth
+          required
+        />
+
+        <TextField
+          label="Password"
+          type={showPassword ? "text" : "password"}
+          variant="outlined"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          fullWidth
+          required
+          InputProps={{
+            endAdornment: (
+              <InputAdornment position="end">
+                <IconButton
+                  onClick={() => setShowPassword(!showPassword)}
+                  edge="end"
+                >
+                  {showPassword ? <VisibilityOff /> : <Visibility />}
+                </IconButton>
+              </InputAdornment>
+            ),
+          }}
+        />
+
+        {!isRegistering && (
+          <Box sx={{ display: "flex", justifyContent: "flex-end", mt: -1 }}>
             <Typography
-              component="h1"
-              variant="h5"
-              color="primary"
-              fontWeight="bold"
+              variant="caption"
+              color="secondary"
+              sx={{
+                cursor: "pointer",
+                fontWeight: 600,
+                "&:hover": { textDecoration: "underline" },
+              }}
+              onClick={() => setAuthMode("forgot")}
             >
-              Sign in to Logistics Portal
+              Forgot Password?
             </Typography>
           </Box>
+        )}
 
-          {error && (
-            <Alert severity="error" sx={{ mb: 3 }}>
-              {error}
-            </Alert>
-          )}
-
-          <Box component="form" onSubmit={handleLogin} noValidate>
-            <TextField
-              margin="normal"
-              required
-              fullWidth
-              label="Corporate Email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              autoFocus
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              disabled={loading}
-              sx={{ mb: 2 }}
-            />
-            <TextField
-              margin="normal"
-              required
-              fullWidth
-              name="password"
-              label="Password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
-            />
-
-            {setAuthMode && (
-              <Box
-                sx={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  mt: 1,
-                  mb: 1,
-                }}
-              >
-                <Link
-                  component="button"
-                  type="button"
-                  variant="body2"
-                  onClick={() => setAuthMode("forgot")}
-                  sx={{
-                    fontWeight: 600,
-                    color: "primary.main",
-                    textDecoration: "none",
-                  }}
-                >
-                  Forgot Password?
-                </Link>
-              </Box>
-            )}
-
-            <Button
-              type="submit"
-              fullWidth
-              variant="contained"
-              size="large"
-              disabled={loading}
-              sx={{ mt: 2, mb: 3, py: 1.8, fontWeight: "bold" }}
-            >
-              {loading ? "Verifying..." : "Sign In"}
-            </Button>
-          </Box>
-        </Paper>
+        <Button
+          type="submit"
+          variant="contained"
+          color="primary"
+          size="large"
+          fullWidth
+          disabled={loading}
+          sx={{ py: 1.5, mt: 1, borderRadius: 2, fontSize: "1rem" }}
+        >
+          {loading
+            ? "Processing..."
+            : isRegistering
+              ? "Create Account"
+              : "Sign In"}
+        </Button>
       </Box>
-    </Container>
+
+      <Box sx={{ mt: 4, textAlign: "center" }}>
+        <Typography variant="body2" color="text.secondary">
+          {isRegistering
+            ? "Already have an account? "
+            : "Don't have an account? "}
+          <Typography
+            component="span"
+            variant="body2"
+            color="secondary"
+            fontWeight="bold"
+            sx={{
+              cursor: "pointer",
+              "&:hover": { textDecoration: "underline" },
+            }}
+            onClick={() => {
+              setIsRegistering(!isRegistering);
+              setError(""); // Clear errors when switching tabs
+            }}
+          >
+            {isRegistering ? "Sign In" : "Register Here"}
+          </Typography>
+        </Typography>
+      </Box>
+    </Card>
   );
 }

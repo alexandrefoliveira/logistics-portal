@@ -56,7 +56,6 @@ import {
   Cell,
 } from "recharts";
 
-// Icons
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import PrecisionManufacturingIcon from "@mui/icons-material/PrecisionManufacturing";
 import DashboardIcon from "@mui/icons-material/Dashboard";
@@ -70,7 +69,6 @@ import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import SendIcon from "@mui/icons-material/Send";
 
-// Import Custom Components
 import Login from "./components/Login";
 import ChangePassword from "./components/ChangePassword";
 import ResetPassword from "./components/ResetPassword";
@@ -110,7 +108,6 @@ const theme = createTheme({
 
 const drawerWidth = 260;
 const CHART_COLORS = ["#007BFF", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"];
-
 const CARRIER_EQUIP = [
   "53' Dry Van",
   "Flatbed",
@@ -119,58 +116,24 @@ const CARRIER_EQUIP = [
   "Ocean Container",
 ];
 
-// Mock Data for Transfers (To be replaced with database later)
-const mockTransfers = [
-  {
-    id: "TRX-8902",
-    type: "Material",
-    origin: "Shelburne",
-    dest: "Feversham",
-    status: "PENDING_QUOTE",
-    date: "Jul 03, 2026",
-    requestor: "Alexandre Oliveira",
-  },
-  {
-    id: "TRX-8901",
-    type: "Equipment",
-    origin: "Shelburne",
-    dest: "Calgary",
-    status: "APPROVED",
-    date: "Jul 02, 2026",
-    requestor: "John Fudge",
-  },
-  {
-    id: "TRX-8899",
-    type: "Material",
-    origin: "Vendor",
-    dest: "Shelburne",
-    status: "IN_TRANSIT",
-    date: "Jul 01, 2026",
-    requestor: "Mitch Flynn",
-  },
-  {
-    id: "TRX-8895",
-    type: "Equipment",
-    origin: "BMP",
-    dest: "Shelburne",
-    status: "COMPLETED",
-    date: "Jun 28, 2026",
-    requestor: "Alexandre Oliveira",
-  },
-];
-
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeView, setActiveView] = useState("Dashboard");
 
-  // Auth State ("login" or "forgot")
-  const [authMode, setAuthMode] = useState("login");
+  const [transfers, setTransfers] = useState([]);
+  const [searchInitiator, setSearchInitiator] = useState("");
+  const [searchType, setSearchType] = useState("All");
 
-  // Dialog States
+  const [dashboardStats, setDashboardStats] = useState({
+    metrics: { pending: 0, active: 0, completed: 0 },
+    facilityData: [{ name: "No Data", value: 1 }],
+    statusData: [{ name: "No Data", Transfers: 0 }],
+  });
+
+  const [authMode, setAuthMode] = useState("login");
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [notificationAnchorEl, setNotificationAnchorEl] = useState(null);
 
-  // Equipment Wizard State
   const [equipStep, setEquipStep] = useState(0);
   const [equipForm, setEquipForm] = useState({
     originName: "",
@@ -187,27 +150,22 @@ export default function App() {
     dimensions: "",
     carrier: "",
   });
-
   const [dateFocus, setDateFocus] = useState({
     earliest: false,
     latest: false,
   });
 
-  // Dynamic User List State
   const [usersList, setUsersList] = useState([]);
-
-  // Feature states
   const [equipFile, setEquipFile] = useState(null);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [selectedTransfer, setSelectedTransfer] = useState(null);
   const [updatesMap, setUpdatesMap] = useState({});
   const [newUpdateText, setNewUpdateText] = useState("");
+  const [workflowComment, setWorkflowComment] = useState("");
 
-  // Fetch real users from the database when the User Management tab is clicked
   useEffect(() => {
     if (currentUser?.role === "Admin" && activeView === "User Management") {
       const token = localStorage.getItem("logistics_token");
-
       fetch("http://localhost:5000/api/users", {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -215,45 +173,47 @@ export default function App() {
         .then((data) => {
           if (data.status === "Success" || Array.isArray(data.data)) {
             setUsersList(data.data || data);
-          } else if (Array.isArray(data)) {
-            setUsersList(data);
           }
         })
-        .catch((err) => console.error("Error fetching users:", err));
+        .catch((err) => console.error(err));
+    }
+  }, [activeView, currentUser]);
+
+  useEffect(() => {
+    if (currentUser && activeView === "Transfer Registry") {
+      const token = localStorage.getItem("logistics_token");
+      fetch("http://localhost:5000/api/transfers", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.status === "Success") setTransfers(data.data);
+        })
+        .catch((err) => console.error(err));
+    }
+  }, [activeView, currentUser]);
+
+  useEffect(() => {
+    if (currentUser && activeView === "Dashboard") {
+      const token = localStorage.getItem("logistics_token");
+      fetch("http://localhost:5000/api/dashboard-stats", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.status === "Success") setDashboardStats(data.data);
+        })
+        .catch((err) => console.error(err));
     }
   }, [activeView, currentUser]);
 
   const handleRoleChange = (userId, newRole) => {
-    // Updates UI locally. Future TODO: Make a PUT request to save this role change in the database.
     setUsersList(
       usersList.map((u) => (u.id === userId ? { ...u, role: newRole } : u)),
     );
   };
 
-  const openReviewModal = (transfer) => {
-    setSelectedTransfer(transfer);
-    setNewUpdateText("");
-    setIsReviewModalOpen(true);
-  };
-
-  const handlePostUpdate = () => {
-    if (!newUpdateText.trim() || !selectedTransfer) return;
-    const timestamp = new Date().toLocaleString();
-    const update = {
-      id: Date.now(),
-      user_name: currentUser.name || currentUser.full_name,
-      text: newUpdateText,
-      date: timestamp,
-    };
-    setUpdatesMap((prev) => ({
-      ...prev,
-      [selectedTransfer.id]: [update, ...(prev[selectedTransfer.id] || [])],
-    }));
-    setNewUpdateText("");
-  };
-
   const handleLogout = () => {
-    // Clear the JWT security token from the browser
     localStorage.removeItem("logistics_token");
     setCurrentUser(null);
     setActiveView("Dashboard");
@@ -261,38 +221,180 @@ export default function App() {
     setAuthMode("login");
   };
 
+  const handleEquipmentSubmit = async () => {
+    try {
+      const token = localStorage.getItem("logistics_token");
+      const response = await fetch(
+        "http://localhost:5000/api/equipment-transfers",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(equipForm),
+        },
+      );
+
+      const data = await response.json();
+      if (!response.ok || data.status === "Error")
+        return alert(data.message || "Failed to submit request.");
+
+      alert(`Success! Transfer Request generated with ID: ${data.requestId}`);
+
+      setEquipForm({
+        originName: "",
+        destName: "",
+        shippingEarliest: "",
+        shippingLatest: "",
+        equipId: "",
+        projectCode: "",
+        hsCode: "",
+        unitValue: "",
+        description: "",
+        pallets: "",
+        weight: "",
+        dimensions: "",
+        carrier: "",
+      });
+      setEquipStep(0);
+      setActiveView("Transfer Registry");
+    } catch (err) {
+      console.error(err);
+      alert("Unable to connect to the server.");
+    }
+  };
+
+  const openReviewModal = async (transfer) => {
+    setSelectedTransfer(transfer);
+    setNewUpdateText("");
+    setWorkflowComment("");
+    setIsReviewModalOpen(true);
+
+    try {
+      const token = localStorage.getItem("logistics_token");
+      const response = await fetch(
+        `http://localhost:5000/api/transfers/${transfer.raw_id}/logs`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      const data = await response.json();
+      if (data.status === "Success")
+        setUpdatesMap((prev) => ({ ...prev, [transfer.raw_id]: data.data }));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handlePostUpdate = async () => {
+    if (!newUpdateText.trim() || !selectedTransfer) return;
+    try {
+      const token = localStorage.getItem("logistics_token");
+      const response = await fetch(
+        `http://localhost:5000/api/transfers/${selectedTransfer.raw_id}/logs`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ text: newUpdateText }),
+        },
+      );
+      const data = await response.json();
+      if (data.status === "Success") openReviewModal(selectedTransfer);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to post update to the server.");
+    }
+  };
+
+  const handleUpdateStatus = async (action) => {
+    try {
+      const token = localStorage.getItem("logistics_token");
+      const response = await fetch(
+        `http://localhost:5000/api/transfers/${selectedTransfer.raw_id}/status`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ action, comment: workflowComment }),
+        },
+      );
+
+      const data = await response.json();
+      if (data.status === "Success") {
+        const updatedTransfer = { ...selectedTransfer, status: data.newStatus };
+        setSelectedTransfer(updatedTransfer);
+        setTransfers((prev) =>
+          prev.map((t) =>
+            t.raw_id === selectedTransfer.raw_id
+              ? { ...t, status: data.newStatus }
+              : t,
+          ),
+        );
+        openReviewModal(updatedTransfer);
+      } else {
+        alert(data.message || "Failed to process action.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to process the workflow action.");
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
-      case "APPROVED":
-        return "info";
-      case "PENDING_QUOTE":
-        return "warning";
-      case "IN_TRANSIT":
-        return "primary";
       case "COMPLETED":
         return "success";
       case "REJECTED":
         return "error";
-      default:
+      case "Pending Executive Approval":
         return "default";
+      case "Pending Quality Value Confirmation":
+        return "secondary";
+      case "Pending Plant Manager Coordination":
+        return "warning";
+      case "Pending Planning & Scheduling":
+        return "info";
+      case "Pending Execution & Lab Reporting":
+        return "primary";
+      case "Pending Final Executive Sign-Off":
+        return "secondary";
+      case "Pending Quality Assurance Close-Out":
+        return "success";
+      default:
+        return "warning";
     }
   };
 
-  const facilityData = [
-    { name: "Shelburne", value: 12 },
-    { name: "Grafton", value: 5 },
-    { name: "Feversham", value: 3 },
-    { name: "Calgary", value: 2 },
-  ];
+  const hasAccessToApprove = (status, role) => {
+    if (role === "Admin") return true;
 
-  const statusData = [
-    { name: "Pending", Transfers: 4 },
-    { name: "Approved", Transfers: 8 },
-    { name: "In Transit", Transfers: 5 },
-    { name: "Completed", Transfers: 15 },
-  ];
+    const allowedRoles = {
+      "Pending Executive Approval": ["Executive"],
+      "Pending Quality Value Confirmation": ["Quality Auditor"],
+      "Pending Plant Manager Coordination": ["Plant Manager"],
+      "Pending Planning & Scheduling": ["Planner"],
+      "Pending Execution & Lab Reporting": ["Plant Manager"],
+      "Pending Final Executive Sign-Off": ["Executive"],
+      "Pending Quality Assurance Close-Out": ["Quality Auditor"],
+    };
 
-  // --- UNAUTHENTICATED VIEW (Login & Forgot Password) ---
+    return allowedRoles[status]?.includes(role) || false;
+  };
+
+  const filteredTransfers = transfers.filter((t) => {
+    const matchType = searchType === "All" || t.type === searchType;
+    const matchInit = t.initiator
+      .toLowerCase()
+      .includes(searchInitiator.toLowerCase());
+    return matchType && matchInit;
+  });
+
   if (!currentUser) {
     return (
       <ThemeProvider theme={theme}>
@@ -336,12 +438,10 @@ export default function App() {
     );
   }
 
-  // --- AUTHENTICATED VIEW (Dashboard) ---
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box sx={{ display: "flex", minHeight: "100vh", width: "100%" }}>
-        {/* TOP APP BAR */}
         <AppBar
           position="fixed"
           elevation={0}
@@ -404,10 +504,10 @@ export default function App() {
                       fontWeight="bold"
                       color="primary"
                     >
-                      TRX-8902 Pending Quote
+                      System Update
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Carrier has updated the lane pricing.
+                      You are connected to the live database.
                     </Typography>
                   </Box>
                 </MenuItem>
@@ -441,7 +541,6 @@ export default function App() {
           </Toolbar>
         </AppBar>
 
-        {/* SIDEBAR */}
         <Drawer
           variant="permanent"
           sx={{
@@ -500,7 +599,6 @@ export default function App() {
                 );
               },
             )}
-
             {currentUser.role === "Admin" && (
               <ListItem
                 selected={activeView === "User Management"}
@@ -520,7 +618,6 @@ export default function App() {
               </ListItem>
             )}
           </List>
-
           <Box sx={{ flexGrow: 1 }} />
           <Box sx={{ p: 2, display: "flex", flexDirection: "column", gap: 1 }}>
             <Button
@@ -546,7 +643,6 @@ export default function App() {
           </Box>
         </Drawer>
 
-        {/* MAIN CONTENT AREA */}
         <Box
           component="main"
           sx={{
@@ -589,7 +685,6 @@ export default function App() {
               </Box>
             </Box>
 
-            {/* DASHBOARD VIEW */}
             {activeView === "Dashboard" && (
               <Box
                 sx={{
@@ -608,7 +703,7 @@ export default function App() {
                   }}
                 >
                   {[
-                    "Pending Quotes",
+                    "Pending Actions",
                     "Active Logistics",
                     "Completed Deliveries",
                   ].map((title, index) => (
@@ -640,7 +735,11 @@ export default function App() {
                           color="primary"
                           sx={{ mt: 1, fontWeight: "800" }}
                         >
-                          {index === 0 ? "4" : index === 1 ? "12" : "143"}
+                          {index === 0
+                            ? dashboardStats.metrics.pending
+                            : index === 1
+                              ? dashboardStats.metrics.active
+                              : dashboardStats.metrics.completed}
                         </Typography>
                       </Box>
                       <Box
@@ -689,7 +788,7 @@ export default function App() {
                         <ResponsiveContainer width="100%" height="100%">
                           <PieChart>
                             <Pie
-                              data={facilityData}
+                              data={dashboardStats.facilityData}
                               cx="50%"
                               cy="50%"
                               innerRadius="55%"
@@ -697,14 +796,16 @@ export default function App() {
                               paddingAngle={5}
                               dataKey="value"
                             >
-                              {facilityData.map((entry, index) => (
-                                <Cell
-                                  key={`cell-${index}`}
-                                  fill={
-                                    CHART_COLORS[index % CHART_COLORS.length]
-                                  }
-                                />
-                              ))}
+                              {dashboardStats.facilityData.map(
+                                (entry, index) => (
+                                  <Cell
+                                    key={`cell-${index}`}
+                                    fill={
+                                      CHART_COLORS[index % CHART_COLORS.length]
+                                    }
+                                  />
+                                ),
+                              )}
                             </Pie>
                             <ChartTooltip
                               contentStyle={{
@@ -750,7 +851,7 @@ export default function App() {
                       >
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart
-                            data={statusData}
+                            data={dashboardStats.statusData}
                             margin={{
                               top: 20,
                               right: 20,
@@ -799,9 +900,40 @@ export default function App() {
               </Box>
             )}
 
-            {/* TRANSFER REGISTRY VIEW */}
             {activeView === "Transfer Registry" && (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <Box
+                  sx={{
+                    display: "flex",
+                    gap: 2,
+                    bgcolor: "white",
+                    p: 2,
+                    borderRadius: 3,
+                    border: "1px solid #E2E8F0",
+                  }}
+                >
+                  <TextField
+                    size="small"
+                    label="Search Initiator..."
+                    variant="outlined"
+                    value={searchInitiator}
+                    onChange={(e) => setSearchInitiator(e.target.value)}
+                    sx={{ minWidth: 250 }}
+                  />
+                  <FormControl size="small" sx={{ minWidth: 200 }}>
+                    <InputLabel>Filter by Type</InputLabel>
+                    <Select
+                      value={searchType}
+                      label="Filter by Type"
+                      onChange={(e) => setSearchType(e.target.value)}
+                    >
+                      <MenuItem value="All">All Types</MenuItem>
+                      <MenuItem value="Equipment">Equipment</MenuItem>
+                      <MenuItem value="Material">Material</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Box>
+
                 <TableContainer
                   component={Paper}
                   elevation={0}
@@ -813,13 +945,13 @@ export default function App() {
                         <TableCell>Transfer ID</TableCell>
                         <TableCell>Type</TableCell>
                         <TableCell>Routing</TableCell>
-                        <TableCell>Requestor</TableCell>
+                        <TableCell>Initiator</TableCell>
                         <TableCell>Date</TableCell>
                         <TableCell align="center">Status</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {mockTransfers.map((transfer) => (
+                      {filteredTransfers.map((transfer) => (
                         <TableRow
                           key={transfer.id}
                           hover
@@ -838,7 +970,7 @@ export default function App() {
                           <TableCell>
                             {transfer.origin} → {transfer.dest}
                           </TableCell>
-                          <TableCell>{transfer.requestor}</TableCell>
+                          <TableCell>{transfer.initiator}</TableCell>
                           <TableCell>{transfer.date}</TableCell>
                           <TableCell align="center">
                             <Chip
@@ -860,7 +992,6 @@ export default function App() {
               </Box>
             )}
 
-            {/* EQUIPMENT MOVE VIEW (WIZARD) */}
             {activeView === "Equipment Move" && (
               <Card
                 elevation={0}
@@ -889,6 +1020,36 @@ export default function App() {
                     <Box
                       sx={{ display: "flex", flexDirection: "column", gap: 4 }}
                     >
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 3,
+                          flexDirection: { xs: "column", sm: "row" },
+                        }}
+                      >
+                        <TextField
+                          label="Origin Facility"
+                          value={equipForm.originName}
+                          onChange={(e) =>
+                            setEquipForm({
+                              ...equipForm,
+                              originName: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                        <TextField
+                          label="Destination Facility"
+                          value={equipForm.destName}
+                          onChange={(e) =>
+                            setEquipForm({
+                              ...equipForm,
+                              destName: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                      </Box>
                       <Box
                         sx={{
                           display: "flex",
@@ -967,7 +1128,6 @@ export default function App() {
                       </Box>
                     </Box>
                   )}
-
                   {equipStep === 1 && (
                     <Box
                       sx={{ display: "flex", flexDirection: "column", gap: 4 }}
@@ -1062,7 +1222,6 @@ export default function App() {
                       />
                     </Box>
                   )}
-
                   {equipStep === 2 && (
                     <Box
                       sx={{ display: "flex", flexDirection: "column", gap: 4 }}
@@ -1183,7 +1342,6 @@ export default function App() {
                       </Box>
                     </Box>
                   )}
-
                   <Box
                     sx={{
                       display: "flex",
@@ -1213,8 +1371,7 @@ export default function App() {
                       color="secondary"
                       onClick={() => {
                         if (equipStep === 2) {
-                          setActiveView("Transfer Registry");
-                          setEquipStep(0);
+                          handleEquipmentSubmit();
                         } else {
                           setEquipStep((prev) => prev + 1);
                         }
@@ -1227,7 +1384,6 @@ export default function App() {
               </Card>
             )}
 
-            {/* USER MANAGEMENT VIEW */}
             {activeView === "User Management" &&
               currentUser.role === "Admin" && (
                 <TableContainer
@@ -1259,9 +1415,9 @@ export default function App() {
                           <TableCell>{user.full_name || user.name}</TableCell>
                           <TableCell>{user.email}</TableCell>
                           <TableCell>
-                            {new Date(
-                              user.created_at || Date.now(),
-                            ).toLocaleDateString()}
+                            {user.created_at
+                              ? new Date(user.created_at).toLocaleDateString()
+                              : "N/A"}
                           </TableCell>
                           <TableCell>
                             <FormControl size="small" sx={{ minWidth: 150 }}>
@@ -1278,8 +1434,10 @@ export default function App() {
                               >
                                 {[
                                   "Admin",
-                                  "Dispatcher",
+                                  "Executive",
+                                  "Quality Auditor",
                                   "Plant Manager",
+                                  "Planner",
                                   "Requester",
                                   "Read-Only",
                                 ].map((role) => (
@@ -1297,7 +1455,6 @@ export default function App() {
                 </TableContainer>
               )}
 
-            {/* TRANSFER REVIEW MODAL (ACTIVITY FEED) */}
             <Dialog
               open={isReviewModalOpen}
               onClose={() => setIsReviewModalOpen(false)}
@@ -1358,6 +1515,67 @@ export default function App() {
                       </Box>
                     </Box>
 
+                    {selectedTransfer.status !== "COMPLETED" &&
+                      selectedTransfer.status !== "REJECTED" &&
+                      hasAccessToApprove(
+                        selectedTransfer.status,
+                        currentUser.role,
+                      ) && (
+                        <Box
+                          sx={{
+                            mb: 3,
+                            p: 2,
+                            bgcolor: "#F1F5F9",
+                            borderRadius: 2,
+                            border: "1px solid #E2E8F0",
+                          }}
+                        >
+                          <Typography
+                            variant="subtitle2"
+                            color="primary"
+                            sx={{ mb: 1, fontWeight: "bold" }}
+                          >
+                            Workflow Decision
+                          </Typography>
+                          <TextField
+                            fullWidth
+                            size="small"
+                            placeholder="Required: Please provide a reason for approval or rejection..."
+                            value={workflowComment}
+                            onChange={(e) => setWorkflowComment(e.target.value)}
+                            multiline
+                            rows={2}
+                            sx={{ bgcolor: "white", mb: 2 }}
+                          />
+                          <Box
+                            sx={{
+                              display: "flex",
+                              gap: 1,
+                              justifyContent: "flex-end",
+                            }}
+                          >
+                            <Button
+                              variant="outlined"
+                              color="error"
+                              size="small"
+                              onClick={() => handleUpdateStatus("Reject")}
+                              disabled={!workflowComment.trim()}
+                            >
+                              Reject
+                            </Button>
+                            <Button
+                              variant="contained"
+                              color="success"
+                              size="small"
+                              onClick={() => handleUpdateStatus("Approve")}
+                              disabled={!workflowComment.trim()}
+                            >
+                              Approve
+                            </Button>
+                          </Box>
+                        </Box>
+                      )}
+
                     <Divider sx={{ mb: 3 }} />
 
                     <Typography variant="h6" color="primary" sx={{ mb: 2 }}>
@@ -1410,8 +1628,8 @@ export default function App() {
                       }}
                     >
                       {!(
-                        updatesMap[selectedTransfer.id] &&
-                        updatesMap[selectedTransfer.id].length > 0
+                        updatesMap[selectedTransfer.raw_id] &&
+                        updatesMap[selectedTransfer.raw_id].length > 0
                       ) ? (
                         <Typography
                           variant="body2"
@@ -1422,7 +1640,7 @@ export default function App() {
                           No updates have been posted yet.
                         </Typography>
                       ) : (
-                        updatesMap[selectedTransfer.id].map((update) => (
+                        updatesMap[selectedTransfer.raw_id].map((update) => (
                           <Box
                             key={update.id}
                             sx={{
@@ -1468,7 +1686,6 @@ export default function App() {
               )}
             </Dialog>
 
-            {/* CHANGE PASSWORD MODAL */}
             <ChangePassword
               open={isChangePasswordOpen}
               onClose={() => setIsChangePasswordOpen(false)}
