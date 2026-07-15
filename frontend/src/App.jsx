@@ -40,6 +40,7 @@ import {
   DialogTitle,
   DialogContent,
   Alert,
+  InputAdornment,
 } from "@mui/material";
 
 import {
@@ -94,7 +95,11 @@ const theme = createTheme({
   components: {
     MuiButton: {
       styleOverrides: {
-        root: { boxShadow: "none", "&:hover": { boxShadow: "none" } },
+        root: {
+          boxShadow: "none",
+          "&:hover": { boxShadow: "none" },
+          "&.Mui-disabled": { backgroundColor: "#E2E8F0", color: "#94A3B8" }, // Better disabled styling
+        },
       },
     },
     MuiOutlinedInput: { styleOverrides: { root: { borderRadius: 8 } } },
@@ -108,12 +113,28 @@ const theme = createTheme({
 
 const drawerWidth = 260;
 const CHART_COLORS = ["#007BFF", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"];
+
 const CARRIER_EQUIP = [
   "53' Dry Van",
-  "Flatbed",
-  "Refrigerated",
-  "LTL",
-  "Ocean Container",
+  "53' Refrigerated (Reefer)",
+  "LTL (Less Than Truckload)",
+  "Flatbed / Heavy Haul",
+  "Ocean Container / Intermodal",
+];
+
+const FACILITIES = [
+  "Calgary",
+  "Chilliwack",
+  "CRP",
+  "Dundalk",
+  "Feversham",
+  "Feversham - BMPP",
+  "Grafton",
+  "Lachute",
+  "Shelburne BMPE",
+  "Shelburne BMPR",
+  "Shelburne Water",
+  "Other (External)",
 ];
 
 export default function App() {
@@ -135,6 +156,8 @@ export default function App() {
   const [notificationAnchorEl, setNotificationAnchorEl] = useState(null);
 
   const [equipStep, setEquipStep] = useState(0);
+
+  // NEW: Updated equipForm state to handle split dimensions
   const [equipForm, setEquipForm] = useState({
     originName: "",
     destName: "",
@@ -147,9 +170,12 @@ export default function App() {
     description: "",
     pallets: "",
     weight: "",
-    dimensions: "",
+    length: "",
+    width: "",
+    height: "",
     carrier: "",
   });
+
   const [dateFocus, setDateFocus] = useState({
     earliest: false,
     latest: false,
@@ -162,6 +188,38 @@ export default function App() {
   const [updatesMap, setUpdatesMap] = useState({});
   const [newUpdateText, setNewUpdateText] = useState("");
   const [workflowComment, setWorkflowComment] = useState("");
+
+  // --- NEW: FORM VALIDATION LOGIC ---
+  const isStepComplete = () => {
+    if (equipStep === 0) {
+      return (
+        equipForm.originName &&
+        equipForm.destName &&
+        equipForm.shippingEarliest &&
+        equipForm.shippingLatest
+      );
+    }
+    if (equipStep === 1) {
+      return (
+        equipForm.equipId &&
+        equipForm.projectCode &&
+        equipForm.hsCode &&
+        equipForm.unitValue &&
+        equipForm.description
+      );
+    }
+    if (equipStep === 2) {
+      return (
+        equipForm.pallets &&
+        equipForm.weight &&
+        equipForm.length &&
+        equipForm.width &&
+        equipForm.height &&
+        equipForm.carrier
+      );
+    }
+    return false;
+  };
 
   useEffect(() => {
     if (currentUser?.role === "Admin" && activeView === "User Management") {
@@ -240,12 +298,23 @@ export default function App() {
       const token = localStorage.getItem("logistics_token");
 
       const formData = new FormData();
-      Object.keys(equipForm).forEach((key) =>
-        formData.append(key, equipForm[key]),
-      );
-      if (equipFile) {
-        formData.append("file", equipFile);
-      }
+      Object.keys(equipForm).forEach((key) => {
+        // Exclude the split dimensions from direct mapping, we will combine them below
+        if (
+          key !== "length" &&
+          key !== "width" &&
+          key !== "height" &&
+          key !== "dimensions"
+        ) {
+          formData.append(key, equipForm[key]);
+        }
+      });
+
+      // Re-combine the dimensions to save to the database properly
+      const combinedDimensions = `${equipForm.length}L x ${equipForm.width}W x ${equipForm.height}H in`;
+      formData.append("dimensions", combinedDimensions);
+
+      if (equipFile) formData.append("file", equipFile);
 
       const response = await fetch(
         "http://localhost:5000/api/equipment-transfers",
@@ -280,7 +349,9 @@ export default function App() {
         description: "",
         pallets: "",
         weight: "",
-        dimensions: "",
+        length: "",
+        width: "",
+        height: "",
         carrier: "",
       });
       setEquipFile(null);
@@ -1116,29 +1187,47 @@ export default function App() {
                           flexDirection: { xs: "column", sm: "row" },
                         }}
                       >
-                        <TextField
-                          label="Origin Facility"
-                          value={equipForm.originName}
-                          onChange={(e) =>
-                            setEquipForm({
-                              ...equipForm,
-                              originName: e.target.value,
-                            })
-                          }
-                          sx={{ flex: 1 }}
-                        />
-                        <TextField
-                          label="Destination Facility"
-                          value={equipForm.destName}
-                          onChange={(e) =>
-                            setEquipForm({
-                              ...equipForm,
-                              destName: e.target.value,
-                            })
-                          }
-                          sx={{ flex: 1 }}
-                        />
+                        <FormControl sx={{ flex: 1 }} required>
+                          <InputLabel>Origin Facility</InputLabel>
+                          <Select
+                            value={equipForm.originName}
+                            label="Origin Facility"
+                            onChange={(e) =>
+                              setEquipForm({
+                                ...equipForm,
+                                originName: e.target.value,
+                              })
+                            }
+                          >
+                            {FACILITIES.map((fac) => (
+                              <MenuItem key={fac} value={fac}>
+                                {fac}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+
+                        <FormControl sx={{ flex: 1 }} required>
+                          <InputLabel>Destination Facility</InputLabel>
+                          <Select
+                            value={equipForm.destName}
+                            label="Destination Facility"
+                            onChange={(e) =>
+                              setEquipForm({
+                                ...equipForm,
+                                destName: e.target.value,
+                              })
+                            }
+                          >
+                            {FACILITIES.map((fac) => (
+                              <MenuItem key={fac} value={fac}>
+                                {fac}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
                       </Box>
+
                       <Box
                         sx={{
                           display: "flex",
@@ -1147,6 +1236,7 @@ export default function App() {
                         }}
                       >
                         <TextField
+                          required
                           type="datetime-local"
                           label="Earliest Shipping"
                           value={equipForm.shippingEarliest}
@@ -1185,6 +1275,7 @@ export default function App() {
                           }}
                         />
                         <TextField
+                          required
                           type="datetime-local"
                           label="Latest Shipping"
                           value={equipForm.shippingLatest}
@@ -1233,6 +1324,7 @@ export default function App() {
                         }}
                       >
                         <TextField
+                          required
                           label="Equip ID"
                           placeholder="EQ-00000"
                           InputLabelProps={{ shrink: true }}
@@ -1246,6 +1338,7 @@ export default function App() {
                           sx={{ flex: 1 }}
                         />
                         <TextField
+                          required
                           label="Project Code"
                           placeholder="PRJ-123"
                           InputLabelProps={{ shrink: true }}
@@ -1267,6 +1360,7 @@ export default function App() {
                         }}
                       >
                         <TextField
+                          required
                           label="HS Code (Tariff)"
                           placeholder="8471.30.01"
                           InputLabelProps={{ shrink: true }}
@@ -1280,10 +1374,18 @@ export default function App() {
                           sx={{ flex: 1 }}
                         />
                         <TextField
+                          required
                           type="number"
-                          label="Unit Value ($)"
+                          label="Unit Value"
                           placeholder="0.00"
                           InputLabelProps={{ shrink: true }}
+                          InputProps={{
+                            startAdornment: (
+                              <InputAdornment position="start">
+                                $
+                              </InputAdornment>
+                            ),
+                          }}
                           value={equipForm.unitValue}
                           onChange={(e) =>
                             setEquipForm({
@@ -1295,6 +1397,7 @@ export default function App() {
                         />
                       </Box>
                       <TextField
+                        required
                         fullWidth
                         label="Full Equipment Description"
                         placeholder="Detailed description of the asset..."
@@ -1323,6 +1426,7 @@ export default function App() {
                         }}
                       >
                         <TextField
+                          required
                           type="number"
                           label="Pallet Count"
                           placeholder="0"
@@ -1337,10 +1441,18 @@ export default function App() {
                           sx={{ flex: 1 }}
                         />
                         <TextField
+                          required
                           type="number"
-                          label="Total Weight (lbs/kg)"
+                          label="Total Weight"
                           placeholder="0.00"
                           InputLabelProps={{ shrink: true }}
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">
+                                lbs
+                              </InputAdornment>
+                            ),
+                          }}
                           value={equipForm.weight}
                           onChange={(e) =>
                             setEquipForm({
@@ -1351,6 +1463,90 @@ export default function App() {
                           sx={{ flex: 1 }}
                         />
                       </Box>
+
+                      {/* NEW: SPLIT DIMENSIONS */}
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 2,
+                          flexDirection: { xs: "column", sm: "row" },
+                          bgcolor: "#F8FAFC",
+                          p: 2,
+                          borderRadius: 2,
+                          border: "1px solid #E2E8F0",
+                        }}
+                      >
+                        <Typography
+                          variant="overline"
+                          color="text.secondary"
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            width: "100px",
+                            lineHeight: 1.2,
+                          }}
+                        >
+                          Dimensions
+                        </Typography>
+                        <TextField
+                          required
+                          type="number"
+                          label="Length"
+                          placeholder="0"
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">in</InputAdornment>
+                            ),
+                          }}
+                          value={equipForm.length}
+                          onChange={(e) =>
+                            setEquipForm({
+                              ...equipForm,
+                              length: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1, bgcolor: "white" }}
+                        />
+                        <TextField
+                          required
+                          type="number"
+                          label="Width"
+                          placeholder="0"
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">in</InputAdornment>
+                            ),
+                          }}
+                          value={equipForm.width}
+                          onChange={(e) =>
+                            setEquipForm({
+                              ...equipForm,
+                              width: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1, bgcolor: "white" }}
+                        />
+                        <TextField
+                          required
+                          type="number"
+                          label="Height"
+                          placeholder="0"
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">in</InputAdornment>
+                            ),
+                          }}
+                          value={equipForm.height}
+                          onChange={(e) =>
+                            setEquipForm({
+                              ...equipForm,
+                              height: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1, bgcolor: "white" }}
+                        />
+                      </Box>
+
                       <Box
                         sx={{
                           display: "flex",
@@ -1358,20 +1554,11 @@ export default function App() {
                           flexDirection: { xs: "column", sm: "row" },
                         }}
                       >
-                        <TextField
-                          label="Dimensions (L x W x H)"
-                          placeholder="e.g. 48x40x60"
-                          InputLabelProps={{ shrink: true }}
-                          value={equipForm.dimensions}
-                          onChange={(e) =>
-                            setEquipForm({
-                              ...equipForm,
-                              dimensions: e.target.value,
-                            })
-                          }
+                        <FormControl
+                          variant="outlined"
                           sx={{ flex: 1 }}
-                        />
-                        <FormControl variant="outlined" sx={{ flex: 1 }}>
+                          required
+                        >
                           <InputLabel>Carrier Equipment Needed</InputLabel>
                           <Select
                             label="Carrier Equipment Needed"
@@ -1390,8 +1577,10 @@ export default function App() {
                             ))}
                           </Select>
                         </FormControl>
+                        <Box sx={{ flex: 1 }} /> {/* Spacer */}
                       </Box>
-                      <Box sx={{ mt: 2 }}>
+
+                      <Box sx={{ mt: 1 }}>
                         <Typography
                           variant="overline"
                           color="text.secondary"
@@ -1431,6 +1620,8 @@ export default function App() {
                       </Box>
                     </Box>
                   )}
+
+                  {/* NEW: DISABLED BUTTON LOGIC */}
                   <Box
                     sx={{
                       display: "flex",
@@ -1455,9 +1646,11 @@ export default function App() {
                     ) : (
                       <Box />
                     )}
+
                     <Button
                       variant="contained"
                       color="secondary"
+                      disabled={!isStepComplete()} // Locks the button if fields are missing
                       onClick={() => {
                         if (equipStep === 2) {
                           handleEquipmentSubmit();
@@ -1607,7 +1800,6 @@ export default function App() {
                       </Box>
                     </Box>
 
-                    {/* NEW: ATTACHMENT VIEWER WITH VERTICAL FLEX COLUMN */}
                     {selectedTransfer.attachmentName && (
                       <Box
                         sx={{
