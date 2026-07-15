@@ -3,11 +3,33 @@ const cors = require("cors");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const multer = require("multer"); // NEW: File upload library
+const fs = require("fs"); // NEW: File system library
+const path = require("path"); // NEW: Path library
 require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// NEW: Create an uploads directory and configure static file serving
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+app.use("/uploads", express.static(uploadDir));
+
+// NEW: Configure Multer storage engine
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + "-" + file.originalname.replace(/\s+/g, "_"));
+  },
+});
+const upload = multer({ storage: storage });
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-corporate-key-2026";
@@ -67,9 +89,21 @@ async function initializeDatabase() {
     await pool.query(
       `CREATE TABLE IF NOT EXISTS transfer_requests (id INT AUTO_INCREMENT PRIMARY KEY, tracking_number VARCHAR(50), submitted_by VARCHAR(255), department VARCHAR(255), origin_name VARCHAR(255), origin_address VARCHAR(255), origin_attn VARCHAR(255), destination_name VARCHAR(255), destination_address VARCHAR(255), destination_attn VARCHAR(255), shipping_earliest VARCHAR(255), shipping_latest VARCHAR(255), receiving_earliest VARCHAR(255), receiving_latest VARCHAR(255), status VARCHAR(255) DEFAULT 'Pending Executive Approval', timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
     );
+
+    // Migration checks for new columns
     try {
       await pool.query(
         "ALTER TABLE transfer_requests ADD COLUMN tracking_number VARCHAR(50)",
+      );
+    } catch (e) {}
+    try {
+      await pool.query(
+        "ALTER TABLE transfer_requests ADD COLUMN attachment_name VARCHAR(255)",
+      );
+    } catch (e) {}
+    try {
+      await pool.query(
+        "ALTER TABLE transfer_requests ADD COLUMN attachment_url VARCHAR(255)",
       );
     } catch (e) {}
 
@@ -90,7 +124,6 @@ async function initializeDatabase() {
       );
       const teamPass = await bcrypt.hash("IceRiver@2026!", 10);
 
-      // NEW ROSTER ASSIGNMENTS
       const logisticsUsers = [
         [
           "Alexandre Oliveira",
@@ -204,10 +237,12 @@ app.post("/api/register", async (req, res) => {
       [email.toLowerCase().trim()],
     );
     if (existingUser.length > 0)
-      return res.status(400).json({
-        status: "Error",
-        message: "An account with this email already exists.",
-      });
+      return res
+        .status(400)
+        .json({
+          status: "Error",
+          message: "An account with this email already exists.",
+        });
     const hashedPassword = await bcrypt.hash(password, 10);
     const [result] = await pool.query(
       "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, 'Requester')",
@@ -226,10 +261,12 @@ app.post("/api/register", async (req, res) => {
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: "8h" });
     res.json({ status: "Success", user, token });
   } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: "Database error during registration.",
-    });
+    res
+      .status(500)
+      .json({
+        status: "Error",
+        message: "Database error during registration.",
+      });
   }
 });
 
@@ -267,26 +304,12 @@ app.put("/api/users/:id/password", authenticateToken, async (req, res) => {
   }
 });
 
-app.get("/api/users", authenticateToken, async (req, res) => {
-  try {
-    const [rows] = await pool.query(
-      "SELECT id, name AS full_name, email, role, created_at FROM users",
-    );
-    res.json({ status: "Success", data: rows });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ status: "Error", message: "Database fetch failed." });
-  }
-});
-
 app.put("/api/users/:id/role", authenticateToken, async (req, res) => {
   if (req.user.role !== "Admin") {
     return res
       .status(403)
       .json({ status: "Error", message: "Only Admins can change roles." });
   }
-
   const { role } = req.body;
   try {
     await pool.query("UPDATE users SET role = ? WHERE id = ?", [
@@ -297,6 +320,19 @@ app.put("/api/users/:id/role", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("Role Update Error:", error);
     res.status(500).json({ status: "Error", message: "Database error." });
+  }
+});
+
+app.get("/api/users", authenticateToken, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, name AS full_name, email, role, created_at FROM users",
+    );
+    res.json({ status: "Success", data: rows });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ status: "Error", message: "Database fetch failed." });
   }
 });
 
@@ -344,87 +380,111 @@ app.get("/api/dashboard-stats", authenticateToken, async (req, res) => {
   }
 });
 
-// --- CORE DATA PIPELINE ---
-app.post("/api/equipment-transfers", authenticateToken, async (req, res) => {
-  const {
-    originName,
-    destName,
-    shippingEarliest,
-    shippingLatest,
-    equipId,
-    projectCode,
-    hsCode,
-    unitValue,
-    description,
-    pallets,
-    weight,
-    dimensions,
-    carrier,
-  } = req.body;
-  const connection = await pool.getConnection();
-  await connection.beginTransaction();
+// --- CORE DATA PIPELINE (UPDATED WITH MULTER UPLOAD) ---
+app.post(
+  "/api/equipment-transfers",
+  authenticateToken,
+  upload.single("file"),
+  async (req, res) => {
+    const {
+      originName,
+      destName,
+      shippingEarliest,
+      shippingLatest,
+      equipId,
+      projectCode,
+      hsCode,
+      unitValue,
+      description,
+      pallets,
+      weight,
+      dimensions,
+      carrier,
+    } = req.body;
 
-  try {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let randomStr = "";
-    for (let i = 0; i < 6; i++)
-      randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
-    const trackingNumber = `TRX-${randomStr}`;
+    // Capture File Info
+    const attachmentName = req.file ? req.file.originalname : null;
+    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : null;
 
-    const [transferResult] = await connection.query(
-      `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?)`,
-      [
-        trackingNumber,
-        req.user.email,
-        originName,
-        destName,
-        shippingEarliest,
-        shippingLatest,
-      ],
-    );
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const newRequestId = transferResult.insertId;
+    try {
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      let randomStr = "";
+      for (let i = 0; i < 6; i++)
+        randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+      const trackingNumber = `TRX-${randomStr}`;
 
-    await connection.query(
-      `INSERT INTO equipment_items (request_id, project_code, hs_code, description, pallets, weight, dimensions, unit_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        newRequestId,
-        projectCode,
-        hsCode,
-        description,
-        pallets,
-        weight,
-        dimensions,
-        unitValue || 0,
-      ],
-    );
+      const [transferResult] = await connection.query(
+        `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest, attachment_name, attachment_url) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?, ?, ?)`,
+        [
+          trackingNumber,
+          req.user.email,
+          originName,
+          destName,
+          shippingEarliest,
+          shippingLatest,
+          attachmentName,
+          attachmentUrl,
+        ],
+      );
 
-    await connection.query(
-      `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Submitted', 'Initial equipment move request submitted.')`,
-      [newRequestId, req.user.email],
-    );
+      const newRequestId = transferResult.insertId;
 
-    await connection.commit();
-    res.json({
-      status: "Success",
-      message: "Equipment Move successfully submitted!",
-      requestId: trackingNumber,
-    });
-  } catch (error) {
-    await connection.rollback();
-    res.status(500).json({
-      status: "Error",
-      message: "Failed to save the transfer request.",
-    });
-  } finally {
-    connection.release();
-  }
-});
+      await connection.query(
+        `INSERT INTO equipment_items (request_id, project_code, hs_code, description, pallets, weight, dimensions, unit_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newRequestId,
+          projectCode,
+          hsCode,
+          description,
+          pallets,
+          weight,
+          dimensions,
+          unitValue || 0,
+        ],
+      );
+
+      await connection.query(
+        `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Submitted', 'Initial equipment move request submitted.')`,
+        [newRequestId, req.user.email],
+      );
+
+      await connection.commit();
+      res.json({
+        status: "Success",
+        message: "Equipment Move successfully submitted!",
+        requestId: trackingNumber,
+      });
+    } catch (error) {
+      await connection.rollback();
+      res
+        .status(500)
+        .json({
+          status: "Error",
+          message: "Failed to save the transfer request.",
+        });
+    } finally {
+      connection.release();
+    }
+  },
+);
 
 app.get("/api/transfers", authenticateToken, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT COALESCE(t.tracking_number, CONCAT('TRX-', LPAD(t.id, 4, '0'))) AS id, t.id AS raw_id, 'Equipment' AS type, COALESCE(t.origin_name, 'TBD') AS origin, COALESCE(t.destination_name, 'TBD') AS dest, COALESCE(u.name, t.submitted_by) AS initiator, DATE_FORMAT(t.timestamp, '%b %d, %Y') AS date, t.status
+      SELECT 
+        COALESCE(t.tracking_number, CONCAT('TRX-', LPAD(t.id, 4, '0'))) AS id, 
+        t.id AS raw_id, 
+        'Equipment' AS type, 
+        COALESCE(t.origin_name, 'TBD') AS origin, 
+        COALESCE(t.destination_name, 'TBD') AS dest, 
+        COALESCE(u.name, t.submitted_by) AS initiator, 
+        DATE_FORMAT(t.timestamp, '%b %d, %Y') AS date, 
+        t.status,
+        t.attachment_name AS attachmentName,
+        t.attachment_url AS attachmentUrl
       FROM transfer_requests t LEFT JOIN users u ON t.submitted_by = u.email ORDER BY t.timestamp DESC
     `);
     res.json({ status: "Success", data: rows });
@@ -487,7 +547,6 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
 
     const currentStatus = transfer[0].status;
 
-    // --- SECURE RBAC MAP (Exact match to your functional document) ---
     const rbacPermissions = {
       "Pending Executive Approval": ["Executive"],
       "Pending Quality Value Confirmation": ["Quality Auditor"],
@@ -498,7 +557,6 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
       "Pending Quality Assurance Close-Out": ["Quality Auditor"],
     };
 
-    // The Admin user bypasses all rules
     const isAuthorized =
       userRole === "Admin" ||
       (rbacPermissions[currentStatus] &&
@@ -507,10 +565,12 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
     if (!isAuthorized) {
       await connection.rollback();
       connection.release();
-      return res.status(403).json({
-        status: "Error",
-        message: `Access Denied: Your role (${userRole}) is not authorized to approve this step.`,
-      });
+      return res
+        .status(403)
+        .json({
+          status: "Error",
+          message: `Access Denied: Your role (${userRole}) is not authorized to approve this step.`,
+        });
     }
 
     let newStatus = currentStatus;
@@ -518,7 +578,6 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
     if (action === "Reject") {
       newStatus = "REJECTED";
     } else if (action === "Approve") {
-      // --- THE NEW 7-STEP STATE MACHINE ---
       const statusFlow = {
         "Pending Executive Approval": "Pending Quality Value Confirmation",
         "Pending Quality Value Confirmation":

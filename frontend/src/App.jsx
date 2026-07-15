@@ -207,10 +207,24 @@ export default function App() {
     }
   }, [activeView, currentUser]);
 
-  const handleRoleChange = (userId, newRole) => {
+  const handleRoleChange = async (userId, newRole) => {
     setUsersList(
       usersList.map((u) => (u.id === userId ? { ...u, role: newRole } : u)),
     );
+    try {
+      const token = localStorage.getItem("logistics_token");
+      await fetch(`http://localhost:5000/api/users/${userId}/role`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Failed to sync role change with the server.");
+    }
   };
 
   const handleLogout = () => {
@@ -224,17 +238,29 @@ export default function App() {
   const handleEquipmentSubmit = async () => {
     try {
       const token = localStorage.getItem("logistics_token");
+
+      const formData = new FormData();
+      Object.keys(equipForm).forEach((key) =>
+        formData.append(key, equipForm[key]),
+      );
+      if (equipFile) {
+        formData.append("file", equipFile);
+      }
+
       const response = await fetch(
         "http://localhost:5000/api/equipment-transfers",
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify(equipForm),
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
         },
       );
+
+      if (response.status === 401 || response.status === 403) {
+        handleLogout();
+        alert("Your secure session has expired. Please sign in again.");
+        return;
+      }
 
       const data = await response.json();
       if (!response.ok || data.status === "Error")
@@ -257,6 +283,7 @@ export default function App() {
         dimensions: "",
         carrier: "",
       });
+      setEquipFile(null);
       setEquipStep(0);
       setActiveView("Transfer Registry");
     } catch (err) {
@@ -302,6 +329,13 @@ export default function App() {
           body: JSON.stringify({ text: newUpdateText }),
         },
       );
+
+      if (response.status === 401 || response.status === 403) {
+        handleLogout();
+        alert("Your session has expired.");
+        return;
+      }
+
       const data = await response.json();
       if (data.status === "Success") openReviewModal(selectedTransfer);
     } catch (err) {
@@ -324,6 +358,12 @@ export default function App() {
           body: JSON.stringify({ action, comment: workflowComment }),
         },
       );
+
+      if (response.status === 401 || response.status === 403) {
+        handleLogout();
+        alert("Your session has expired.");
+        return;
+      }
 
       const data = await response.json();
       if (data.status === "Success") {
@@ -395,6 +435,15 @@ export default function App() {
     return matchType && matchInit;
   });
 
+  const pendingActionsForUser = transfers.filter(
+    (t) =>
+      t.status !== "COMPLETED" &&
+      t.status !== "REJECTED" &&
+      hasAccessToApprove(t.status, currentUser?.role),
+  );
+
+  const notificationCount = pendingActionsForUser.length;
+
   if (!currentUser) {
     return (
       <ThemeProvider theme={theme}>
@@ -460,10 +509,15 @@ export default function App() {
                 color="inherit"
                 onClick={(e) => setNotificationAnchorEl(e.currentTarget)}
               >
-                <Badge badgeContent={2} color="secondary">
+                <Badge
+                  badgeContent={notificationCount}
+                  color="error"
+                  invisible={notificationCount === 0}
+                >
                   <NotificationsIcon sx={{ color: "text.secondary" }} />
                 </Badge>
               </IconButton>
+
               <Menu
                 anchorEl={notificationAnchorEl}
                 open={Boolean(notificationAnchorEl)}
@@ -494,24 +548,56 @@ export default function App() {
                     fontWeight="bold"
                     color="primary"
                   >
-                    Notifications
+                    Action Required
                   </Typography>
                 </Box>
-                <MenuItem sx={{ py: 1.5, borderBottom: "1px solid #F1F5F9" }}>
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
-                      fontWeight="bold"
-                      color="primary"
+
+                {notificationCount > 0 ? (
+                  pendingActionsForUser.map((t) => (
+                    <MenuItem
+                      key={t.id}
+                      onClick={() => {
+                        openReviewModal(t);
+                        setNotificationAnchorEl(null);
+                      }}
+                      sx={{
+                        py: 1.5,
+                        borderBottom: "1px solid #F1F5F9",
+                        whiteSpace: "normal",
+                      }}
                     >
-                      System Update
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      You are connected to the live database.
-                    </Typography>
-                  </Box>
-                </MenuItem>
+                      <Box>
+                        <Typography
+                          variant="subtitle2"
+                          fontWeight="bold"
+                          color="primary"
+                        >
+                          {t.id} Awaiting Approval
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Status: {t.status}
+                        </Typography>
+                      </Box>
+                    </MenuItem>
+                  ))
+                ) : (
+                  <MenuItem sx={{ py: 1.5, pointerEvents: "none" }}>
+                    <Box>
+                      <Typography
+                        variant="subtitle2"
+                        fontWeight="bold"
+                        color="text.secondary"
+                      >
+                        No pending actions
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        You are all caught up!
+                      </Typography>
+                    </Box>
+                  </MenuItem>
+                )}
               </Menu>
+
               <Box
                 sx={{
                   display: "flex",
@@ -685,6 +771,7 @@ export default function App() {
               </Box>
             </Box>
 
+            {/* LIVE DASHBOARD VIEW */}
             {activeView === "Dashboard" && (
               <Box
                 sx={{
@@ -900,6 +987,7 @@ export default function App() {
               </Box>
             )}
 
+            {/* TRANSFER REGISTRY VIEW */}
             {activeView === "Transfer Registry" && (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 <Box
@@ -992,6 +1080,7 @@ export default function App() {
               </Box>
             )}
 
+            {/* EQUIPMENT MOVE VIEW */}
             {activeView === "Equipment Move" && (
               <Card
                 elevation={0}
@@ -1384,6 +1473,7 @@ export default function App() {
               </Card>
             )}
 
+            {/* USER MANAGEMENT VIEW */}
             {activeView === "User Management" &&
               currentUser.role === "Admin" && (
                 <TableContainer
@@ -1455,6 +1545,7 @@ export default function App() {
                 </TableContainer>
               )}
 
+            {/* TRANSFER REVIEW MODAL */}
             <Dialog
               open={isReviewModalOpen}
               onClose={() => setIsReviewModalOpen(false)}
@@ -1500,6 +1591,7 @@ export default function App() {
                           {selectedTransfer.origin} → {selectedTransfer.dest}
                         </Typography>
                       </Box>
+
                       <Box textAlign="right">
                         <Typography variant="overline" color="text.secondary">
                           Current Status
@@ -1514,6 +1606,36 @@ export default function App() {
                         </Box>
                       </Box>
                     </Box>
+
+                    {/* NEW: ATTACHMENT VIEWER WITH VERTICAL FLEX COLUMN */}
+                    {selectedTransfer.attachmentName && (
+                      <Box
+                        sx={{
+                          mb: 3,
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "flex-start",
+                        }}
+                      >
+                        <Typography
+                          variant="overline"
+                          color="text.secondary"
+                          sx={{ lineHeight: 1 }}
+                        >
+                          Attached Documentation
+                        </Typography>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<AttachFileIcon />}
+                          href={`http://localhost:5000${selectedTransfer.attachmentUrl}`}
+                          target="_blank"
+                          sx={{ mt: 1, bgcolor: "white" }}
+                        >
+                          {selectedTransfer.attachmentName}
+                        </Button>
+                      </Box>
+                    )}
 
                     {selectedTransfer.status !== "COMPLETED" &&
                       selectedTransfer.status !== "REJECTED" &&
