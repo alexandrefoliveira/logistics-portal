@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { io } from "socket.io-client";
 import {
   ThemeProvider,
   createTheme,
@@ -41,6 +42,7 @@ import {
   DialogContent,
   Alert,
   InputAdornment,
+  Snackbar,
 } from "@mui/material";
 
 import {
@@ -59,6 +61,7 @@ import {
 
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import PrecisionManufacturingIcon from "@mui/icons-material/PrecisionManufacturing";
+import InventoryIcon from "@mui/icons-material/Inventory";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import AssignmentIcon from "@mui/icons-material/Assignment";
 import NotificationsIcon from "@mui/icons-material/Notifications";
@@ -69,6 +72,7 @@ import TimelineIcon from "@mui/icons-material/Timeline";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import SendIcon from "@mui/icons-material/Send";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
 
 import Login from "./components/Login";
 import ChangePassword from "./components/ChangePassword";
@@ -98,7 +102,7 @@ const theme = createTheme({
         root: {
           boxShadow: "none",
           "&:hover": { boxShadow: "none" },
-          "&.Mui-disabled": { backgroundColor: "#E2E8F0", color: "#94A3B8" }, // Better disabled styling
+          "&.Mui-disabled": { backgroundColor: "#E2E8F0", color: "#94A3B8" },
         },
       },
     },
@@ -115,14 +119,21 @@ const drawerWidth = 260;
 const CHART_COLORS = ["#007BFF", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"];
 
 const CARRIER_EQUIP = [
-  "53' Dry Van",
-  "53' Refrigerated (Reefer)",
-  "LTL (Less Than Truckload)",
-  "Flatbed / Heavy Haul",
-  "Ocean Container / Intermodal",
+  "Standard 53' Van",
+  "Flatbed",
+  "Drop Deck",
+  "Double Drop Deck",
+  "LTL",
+  "Tarps",
+  "Chains w/ floor rings",
+  "Straps",
+  "Load bars",
+  "Wooden Floor",
 ];
 
 const FACILITIES = [
+  "Allentown",
+  "BMP",
   "Calgary",
   "Chilliwack",
   "CRP",
@@ -130,11 +141,18 @@ const FACILITIES = [
   "Feversham",
   "Feversham - BMPP",
   "Grafton",
+  "Halton Hills",
+  "High Springs",
+  "Kentland",
   "Lachute",
+  "Marianna",
+  "Morgaton",
+  "Pittsfield",
   "Shelburne BMPE",
   "Shelburne BMPR",
   "Shelburne Water",
   "Other (External)",
+  "Vendor",
 ];
 
 export default function App() {
@@ -155,9 +173,10 @@ export default function App() {
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [notificationAnchorEl, setNotificationAnchorEl] = useState(null);
 
-  const [equipStep, setEquipStep] = useState(0);
+  const [liveToast, setLiveToast] = useState({ open: false, message: "" });
+  const socketRef = useRef(null);
 
-  // NEW: Updated equipForm state to handle split dimensions
+  const [equipStep, setEquipStep] = useState(0);
   const [equipForm, setEquipForm] = useState({
     originName: "",
     destName: "",
@@ -175,6 +194,25 @@ export default function App() {
     height: "",
     carrier: "",
   });
+  const [equipFile, setEquipFile] = useState(null);
+
+  const [materialStep, setMaterialStep] = useState(0);
+  const [materialForm, setMaterialForm] = useState({
+    originName: "",
+    destName: "",
+    shippingEarliest: "",
+    shippingLatest: "",
+    materialNumber: "",
+    batchCode: "",
+    description: "",
+    pallets: "",
+    weight: "",
+    length: "",
+    width: "",
+    height: "",
+    carrier: "",
+  });
+  const [materialFile, setMaterialFile] = useState(null);
 
   const [dateFocus, setDateFocus] = useState({
     earliest: false,
@@ -182,24 +220,21 @@ export default function App() {
   });
 
   const [usersList, setUsersList] = useState([]);
-  const [equipFile, setEquipFile] = useState(null);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [selectedTransfer, setSelectedTransfer] = useState(null);
   const [updatesMap, setUpdatesMap] = useState({});
   const [newUpdateText, setNewUpdateText] = useState("");
   const [workflowComment, setWorkflowComment] = useState("");
 
-  // --- NEW: FORM VALIDATION LOGIC ---
   const isStepComplete = () => {
-    if (equipStep === 0) {
+    if (equipStep === 0)
       return (
         equipForm.originName &&
         equipForm.destName &&
         equipForm.shippingEarliest &&
         equipForm.shippingLatest
       );
-    }
-    if (equipStep === 1) {
+    if (equipStep === 1)
       return (
         equipForm.equipId &&
         equipForm.projectCode &&
@@ -207,8 +242,7 @@ export default function App() {
         equipForm.unitValue &&
         equipForm.description
       );
-    }
-    if (equipStep === 2) {
+    if (equipStep === 2)
       return (
         equipForm.pallets &&
         equipForm.weight &&
@@ -217,14 +251,183 @@ export default function App() {
         equipForm.height &&
         equipForm.carrier
       );
-    }
+    return false;
+  };
+
+  const isMaterialStepComplete = () => {
+    if (materialStep === 0)
+      return (
+        materialForm.originName &&
+        materialForm.destName &&
+        materialForm.shippingEarliest &&
+        materialForm.shippingLatest
+      );
+    if (materialStep === 1)
+      return (
+        materialForm.materialNumber &&
+        materialForm.batchCode &&
+        materialForm.description
+      );
+    if (materialStep === 2)
+      return (
+        materialForm.pallets &&
+        materialForm.weight &&
+        materialForm.length &&
+        materialForm.width &&
+        materialForm.height &&
+        materialForm.carrier
+      );
     return false;
   };
 
   useEffect(() => {
+    if (!currentUser) return;
+
+    const backendUrl =
+      window.location.hostname === "localhost"
+        ? "http://localhost:5000"
+        : `http://${window.location.hostname}:5000`;
+
+    const socket = io(backendUrl, { transports: ["websocket", "polling"] });
+    socketRef.current = socket;
+
+    socket.on("connect", () => console.log("Connected to Live Logistics Feed"));
+
+    socket.on("registryUpdate", (data) => {
+      if (data.newStatus) {
+        setLiveToast({
+          open: true,
+          message: `System Update: Transfer moved to ${data.newStatus}`,
+        });
+      } else {
+        setLiveToast({
+          open: true,
+          message: `System Update: New Transfer Submitted`,
+        });
+      }
+
+      const token = localStorage.getItem("logistics_token");
+      fetch(`${backendUrl}/api/transfers`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((res) => res.json())
+        .then((resData) => {
+          if (resData.status === "Success") setTransfers(resData.data);
+        });
+
+      fetch(`${backendUrl}/api/dashboard-stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((res) => res.json())
+        .then((resData) => {
+          if (resData.status === "Success") setDashboardStats(resData.data);
+        });
+
+      if (data.transferId) {
+        if (data.newStatus) {
+          setSelectedTransfer((prev) => {
+            if (prev && String(prev.raw_id) === String(data.transferId)) {
+              return { ...prev, status: data.newStatus };
+            }
+            return prev;
+          });
+        }
+
+        // NEW FIX: When a status changes (which includes an approval comment), pull the new comment down instantly
+        fetch(`${backendUrl}/api/transfers/${data.transferId}/logs`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+          .then((res) => res.json())
+          .then((resData) => {
+            if (resData.status === "Success") {
+              setUpdatesMap((prev) => ({
+                ...prev,
+                [data.transferId]: resData.data,
+              }));
+            }
+          });
+      }
+    });
+
+    socket.on("transferUpdate", (data) => {
+      if (data.action === "Commented") {
+        setLiveToast({
+          open: true,
+          message: `System Update: New comment posted on a transfer.`,
+        });
+
+        // NEW FIX: When someone posts a raw comment via the text box, instantly pull the logs down
+        const token = localStorage.getItem("logistics_token");
+        const fetchUrl =
+          window.location.hostname === "localhost"
+            ? "http://localhost:5000"
+            : `http://${window.location.hostname}:5000`;
+
+        fetch(`${fetchUrl}/api/transfers/${data.transferId}/logs`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+          .then((res) => res.json())
+          .then((resData) => {
+            if (resData.status === "Success") {
+              setUpdatesMap((prev) => ({
+                ...prev,
+                [data.transferId]: resData.data,
+              }));
+            }
+          })
+          .catch((err) => console.error("Live comment update error:", err));
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser && activeView === "Transfer Registry") {
+      const token = localStorage.getItem("logistics_token");
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
+      fetch(`${backendUrl}/api/transfers`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.status === "Success") setTransfers(data.data);
+        })
+        .catch((err) => console.error(err));
+    }
+  }, [activeView, currentUser]);
+
+  useEffect(() => {
+    if (currentUser && activeView === "Dashboard") {
+      const token = localStorage.getItem("logistics_token");
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
+      fetch(`${backendUrl}/api/dashboard-stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.status === "Success") setDashboardStats(data.data);
+        })
+        .catch((err) => console.error(err));
+    }
+  }, [activeView, currentUser]);
+
+  useEffect(() => {
     if (currentUser?.role === "Admin" && activeView === "User Management") {
       const token = localStorage.getItem("logistics_token");
-      fetch("http://localhost:5000/api/users", {
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
+      fetch(`${backendUrl}/api/users`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((response) => response.json())
@@ -237,41 +440,17 @@ export default function App() {
     }
   }, [activeView, currentUser]);
 
-  useEffect(() => {
-    if (currentUser && activeView === "Transfer Registry") {
-      const token = localStorage.getItem("logistics_token");
-      fetch("http://localhost:5000/api/transfers", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((response) => response.json())
-        .then((data) => {
-          if (data.status === "Success") setTransfers(data.data);
-        })
-        .catch((err) => console.error(err));
-    }
-  }, [activeView, currentUser]);
-
-  useEffect(() => {
-    if (currentUser && activeView === "Dashboard") {
-      const token = localStorage.getItem("logistics_token");
-      fetch("http://localhost:5000/api/dashboard-stats", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((response) => response.json())
-        .then((data) => {
-          if (data.status === "Success") setDashboardStats(data.data);
-        })
-        .catch((err) => console.error(err));
-    }
-  }, [activeView, currentUser]);
-
   const handleRoleChange = async (userId, newRole) => {
     setUsersList(
       usersList.map((u) => (u.id === userId ? { ...u, role: newRole } : u)),
     );
     try {
       const token = localStorage.getItem("logistics_token");
-      await fetch(`http://localhost:5000/api/users/${userId}/role`, {
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
+      await fetch(`${backendUrl}/api/users/${userId}/role`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -290,40 +469,39 @@ export default function App() {
     setCurrentUser(null);
     setActiveView("Dashboard");
     setEquipStep(0);
+    setMaterialStep(0);
     setAuthMode("login");
+    if (socketRef.current) socketRef.current.disconnect();
   };
 
   const handleEquipmentSubmit = async () => {
     try {
       const token = localStorage.getItem("logistics_token");
-
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
       const formData = new FormData();
       Object.keys(equipForm).forEach((key) => {
-        // Exclude the split dimensions from direct mapping, we will combine them below
         if (
           key !== "length" &&
           key !== "width" &&
           key !== "height" &&
           key !== "dimensions"
-        ) {
+        )
           formData.append(key, equipForm[key]);
-        }
       });
-
-      // Re-combine the dimensions to save to the database properly
-      const combinedDimensions = `${equipForm.length}L x ${equipForm.width}W x ${equipForm.height}H in`;
-      formData.append("dimensions", combinedDimensions);
-
+      formData.append(
+        "dimensions",
+        `${equipForm.length}L x ${equipForm.width}W x ${equipForm.height}H in`,
+      );
       if (equipFile) formData.append("file", equipFile);
 
-      const response = await fetch(
-        "http://localhost:5000/api/equipment-transfers",
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        },
-      );
+      const response = await fetch(`${backendUrl}/api/equipment-transfers`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
 
       if (response.status === 401 || response.status === 403) {
         handleLogout();
@@ -335,8 +513,7 @@ export default function App() {
       if (!response.ok || data.status === "Error")
         return alert(data.message || "Failed to submit request.");
 
-      alert(`Success! Transfer Request generated with ID: ${data.requestId}`);
-
+      alert(`Success! Equipment Transfer generated with ID: ${data.requestId}`);
       setEquipForm({
         originName: "",
         destName: "",
@@ -363,6 +540,70 @@ export default function App() {
     }
   };
 
+  const handleMaterialSubmit = async () => {
+    try {
+      const token = localStorage.getItem("logistics_token");
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
+      const formData = new FormData();
+      Object.keys(materialForm).forEach((key) => {
+        if (
+          key !== "length" &&
+          key !== "width" &&
+          key !== "height" &&
+          key !== "dimensions"
+        )
+          formData.append(key, materialForm[key]);
+      });
+      formData.append(
+        "dimensions",
+        `${materialForm.length}L x ${materialForm.width}W x ${materialForm.height}H in`,
+      );
+      if (materialFile) formData.append("file", materialFile);
+
+      const response = await fetch(`${backendUrl}/api/material-transfers`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+
+      if (response.status === 401 || response.status === 403) {
+        handleLogout();
+        alert("Your secure session has expired. Please sign in again.");
+        return;
+      }
+
+      const data = await response.json();
+      if (!response.ok || data.status === "Error")
+        return alert(data.message || "Failed to submit request.");
+
+      alert(`Success! Material Transfer generated with ID: ${data.requestId}`);
+      setMaterialForm({
+        originName: "",
+        destName: "",
+        shippingEarliest: "",
+        shippingLatest: "",
+        materialNumber: "",
+        batchCode: "",
+        description: "",
+        pallets: "",
+        weight: "",
+        length: "",
+        width: "",
+        height: "",
+        carrier: "",
+      });
+      setMaterialFile(null);
+      setMaterialStep(0);
+      setActiveView("Transfer Registry");
+    } catch (err) {
+      console.error(err);
+      alert("Unable to connect to the server.");
+    }
+  };
+
   const openReviewModal = async (transfer) => {
     setSelectedTransfer(transfer);
     setNewUpdateText("");
@@ -371,8 +612,12 @@ export default function App() {
 
     try {
       const token = localStorage.getItem("logistics_token");
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
       const response = await fetch(
-        `http://localhost:5000/api/transfers/${transfer.raw_id}/logs`,
+        `${backendUrl}/api/transfers/${transfer.raw_id}/logs`,
         {
           headers: { Authorization: `Bearer ${token}` },
         },
@@ -389,8 +634,12 @@ export default function App() {
     if (!newUpdateText.trim() || !selectedTransfer) return;
     try {
       const token = localStorage.getItem("logistics_token");
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
       const response = await fetch(
-        `http://localhost:5000/api/transfers/${selectedTransfer.raw_id}/logs`,
+        `${backendUrl}/api/transfers/${selectedTransfer.raw_id}/logs`,
         {
           method: "POST",
           headers: {
@@ -408,7 +657,10 @@ export default function App() {
       }
 
       const data = await response.json();
-      if (data.status === "Success") openReviewModal(selectedTransfer);
+      if (data.status === "Success") {
+        setNewUpdateText(""); // Instantly clear the text box for the active user
+        // We do NOT need to call openReviewModal() anymore, the WebSocket handles the state update!
+      }
     } catch (err) {
       console.error(err);
       alert("Failed to post update to the server.");
@@ -418,8 +670,12 @@ export default function App() {
   const handleUpdateStatus = async (action) => {
     try {
       const token = localStorage.getItem("logistics_token");
+      const backendUrl =
+        window.location.hostname === "localhost"
+          ? "http://localhost:5000"
+          : `http://${window.location.hostname}:5000`;
       const response = await fetch(
-        `http://localhost:5000/api/transfers/${selectedTransfer.raw_id}/status`,
+        `${backendUrl}/api/transfers/${selectedTransfer.raw_id}/status`,
         {
           method: "PUT",
           headers: {
@@ -438,16 +694,7 @@ export default function App() {
 
       const data = await response.json();
       if (data.status === "Success") {
-        const updatedTransfer = { ...selectedTransfer, status: data.newStatus };
-        setSelectedTransfer(updatedTransfer);
-        setTransfers((prev) =>
-          prev.map((t) =>
-            t.raw_id === selectedTransfer.raw_id
-              ? { ...t, status: data.newStatus }
-              : t,
-          ),
-        );
-        openReviewModal(updatedTransfer);
+        setIsReviewModalOpen(false);
       } else {
         alert(data.message || "Failed to process action.");
       }
@@ -455,6 +702,51 @@ export default function App() {
       console.error(err);
       alert("Failed to process the workflow action.");
     }
+  };
+
+  const handleExportData = () => {
+    if (transfers.length === 0) {
+      alert("There is no data to export.");
+      return;
+    }
+
+    const headers = [
+      "Transfer ID",
+      "Type",
+      "Origin",
+      "Destination",
+      "Initiator",
+      "Date Submitted",
+      "Current Status",
+    ];
+
+    const csvRows = [];
+    csvRows.push(headers.join(","));
+
+    filteredTransfers.forEach((transfer) => {
+      const row = [
+        transfer.id,
+        transfer.type,
+        `"${transfer.origin}"`,
+        `"${transfer.dest}"`,
+        `"${transfer.initiator}"`,
+        `"${transfer.date}"`,
+        `"${transfer.status.replace(/_/g, " ")}"`,
+      ];
+      csvRows.push(row.join(","));
+    });
+
+    const csvString = csvRows.join("\n");
+    const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    link.setAttribute("download", `IceRiver_Logistics_Export_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const getStatusColor = (status) => {
@@ -484,7 +776,6 @@ export default function App() {
 
   const hasAccessToApprove = (status, role) => {
     if (role === "Admin") return true;
-
     const allowedRoles = {
       "Pending Executive Approval": ["Executive"],
       "Pending Quality Value Confirmation": ["Quality Auditor"],
@@ -494,7 +785,6 @@ export default function App() {
       "Pending Final Executive Sign-Off": ["Executive"],
       "Pending Quality Assurance Close-Out": ["Quality Auditor"],
     };
-
     return allowedRoles[status]?.includes(role) || false;
   };
 
@@ -622,7 +912,6 @@ export default function App() {
                     Action Required
                   </Typography>
                 </Box>
-
                 {notificationCount > 0 ? (
                   pendingActionsForUser.map((t) => (
                     <MenuItem
@@ -728,34 +1017,38 @@ export default function App() {
           </Box>
           <Divider sx={{ borderColor: "rgba(255,255,255,0.1)" }} />
           <List sx={{ px: 2, pt: 2 }}>
-            {["Dashboard", "Transfer Registry", "Equipment Move"].map(
-              (text, index) => {
-                const icons = [
-                  <DashboardIcon />,
-                  <AssignmentIcon />,
-                  <PrecisionManufacturingIcon />,
-                ];
-                return (
-                  <ListItem
-                    key={text}
-                    selected={activeView === text}
-                    onClick={() => setActiveView(text)}
-                    sx={{
-                      borderRadius: 2,
-                      mb: 1,
-                      cursor: "pointer",
-                      "&:hover": { bgcolor: "rgba(255,255,255,0.08)" },
-                      "&.Mui-selected": { bgcolor: "rgba(255,255,255,0.15)" },
-                    }}
-                  >
-                    <ListItemIcon sx={{ color: "white" }}>
-                      {icons[index]}
-                    </ListItemIcon>
-                    <ListItemText primary={text} />
-                  </ListItem>
-                );
-              },
-            )}
+            {[
+              "Dashboard",
+              "Transfer Registry",
+              "Equipment Move",
+              "Material Move",
+            ].map((text, index) => {
+              const icons = [
+                <DashboardIcon />,
+                <AssignmentIcon />,
+                <PrecisionManufacturingIcon />,
+                <InventoryIcon />,
+              ];
+              return (
+                <ListItem
+                  key={text}
+                  selected={activeView === text}
+                  onClick={() => setActiveView(text)}
+                  sx={{
+                    borderRadius: 2,
+                    mb: 1,
+                    cursor: "pointer",
+                    "&:hover": { bgcolor: "rgba(255,255,255,0.08)" },
+                    "&.Mui-selected": { bgcolor: "rgba(255,255,255,0.15)" },
+                  }}
+                >
+                  <ListItemIcon sx={{ color: "white" }}>
+                    {icons[index]}
+                  </ListItemIcon>
+                  <ListItemText primary={text} />
+                </ListItem>
+              );
+            })}
             {currentUser.role === "Admin" && (
               <ListItem
                 selected={activeView === "User Management"}
@@ -828,7 +1121,9 @@ export default function App() {
                       ? "Logistics Registry"
                       : activeView === "Equipment Move"
                         ? "New Equipment Transfer"
-                        : "User Management"}
+                        : activeView === "Material Move"
+                          ? "New Material Transfer"
+                          : "User Management"}
                 </Typography>
                 <Typography variant="body1" color="text.secondary">
                   {activeView === "Dashboard"
@@ -837,12 +1132,14 @@ export default function App() {
                       ? "View and manage all active network transfers."
                       : activeView === "Equipment Move"
                         ? "Follow the steps to submit a capital asset for relocation."
-                        : "Manage logistics portal access and user roles."}
+                        : activeView === "Material Move"
+                          ? "Initiate a transfer for raw materials, resin, or packaging."
+                          : "Manage logistics portal access and user roles."}
                 </Typography>
               </Box>
             </Box>
 
-            {/* LIVE DASHBOARD VIEW */}
+            {/* DASHBOARD */}
             {activeView === "Dashboard" && (
               <Box
                 sx={{
@@ -1058,7 +1355,7 @@ export default function App() {
               </Box>
             )}
 
-            {/* TRANSFER REGISTRY VIEW */}
+            {/* TRANSFER REGISTRY */}
             {activeView === "Transfer Registry" && (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 <Box
@@ -1069,28 +1366,46 @@ export default function App() {
                     p: 2,
                     borderRadius: 3,
                     border: "1px solid #E2E8F0",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
                   }}
                 >
-                  <TextField
-                    size="small"
-                    label="Search Initiator..."
+                  <Box sx={{ display: "flex", gap: 2 }}>
+                    <TextField
+                      size="small"
+                      label="Search Initiator..."
+                      variant="outlined"
+                      value={searchInitiator}
+                      onChange={(e) => setSearchInitiator(e.target.value)}
+                      sx={{ minWidth: 250 }}
+                    />
+                    <FormControl size="small" sx={{ minWidth: 200 }}>
+                      <InputLabel>Filter by Type</InputLabel>
+                      <Select
+                        value={searchType}
+                        label="Filter by Type"
+                        onChange={(e) => setSearchType(e.target.value)}
+                      >
+                        <MenuItem value="All">All Types</MenuItem>
+                        <MenuItem value="Equipment">Equipment</MenuItem>
+                        <MenuItem value="Material">Material</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Box>
+                  <Button
                     variant="outlined"
-                    value={searchInitiator}
-                    onChange={(e) => setSearchInitiator(e.target.value)}
-                    sx={{ minWidth: 250 }}
-                  />
-                  <FormControl size="small" sx={{ minWidth: 200 }}>
-                    <InputLabel>Filter by Type</InputLabel>
-                    <Select
-                      value={searchType}
-                      label="Filter by Type"
-                      onChange={(e) => setSearchType(e.target.value)}
-                    >
-                      <MenuItem value="All">All Types</MenuItem>
-                      <MenuItem value="Equipment">Equipment</MenuItem>
-                      <MenuItem value="Material">Material</MenuItem>
-                    </Select>
-                  </FormControl>
+                    color="secondary"
+                    startIcon={<FileDownloadIcon />}
+                    onClick={handleExportData}
+                    sx={{
+                      bgcolor: "#F1F5F9",
+                      border: "1px solid #CBD5E1",
+                      color: "#334155",
+                    }}
+                  >
+                    Export Data (CSV)
+                  </Button>
                 </Box>
 
                 <TableContainer
@@ -1151,7 +1466,7 @@ export default function App() {
               </Box>
             )}
 
-            {/* EQUIPMENT MOVE VIEW */}
+            {/* EQUIPMENT MOVE */}
             {activeView === "Equipment Move" && (
               <Card
                 elevation={0}
@@ -1206,7 +1521,6 @@ export default function App() {
                             ))}
                           </Select>
                         </FormControl>
-
                         <FormControl sx={{ flex: 1 }} required>
                           <InputLabel>Destination Facility</InputLabel>
                           <Select
@@ -1227,7 +1541,6 @@ export default function App() {
                           </Select>
                         </FormControl>
                       </Box>
-
                       <Box
                         sx={{
                           display: "flex",
@@ -1463,8 +1776,6 @@ export default function App() {
                           sx={{ flex: 1 }}
                         />
                       </Box>
-
-                      {/* NEW: SPLIT DIMENSIONS */}
                       <Box
                         sx={{
                           display: "flex",
@@ -1546,7 +1857,6 @@ export default function App() {
                           sx={{ flex: 1, bgcolor: "white" }}
                         />
                       </Box>
-
                       <Box
                         sx={{
                           display: "flex",
@@ -1577,9 +1887,8 @@ export default function App() {
                             ))}
                           </Select>
                         </FormControl>
-                        <Box sx={{ flex: 1 }} /> {/* Spacer */}
+                        <Box sx={{ flex: 1 }} />
                       </Box>
-
                       <Box sx={{ mt: 1 }}>
                         <Typography
                           variant="overline"
@@ -1620,8 +1929,6 @@ export default function App() {
                       </Box>
                     </Box>
                   )}
-
-                  {/* NEW: DISABLED BUTTON LOGIC */}
                   <Box
                     sx={{
                       display: "flex",
@@ -1646,11 +1953,10 @@ export default function App() {
                     ) : (
                       <Box />
                     )}
-
                     <Button
                       variant="contained"
                       color="secondary"
-                      disabled={!isStepComplete()} // Locks the button if fields are missing
+                      disabled={!isStepComplete()}
                       onClick={() => {
                         if (equipStep === 2) {
                           handleEquipmentSubmit();
@@ -1666,7 +1972,474 @@ export default function App() {
               </Card>
             )}
 
-            {/* USER MANAGEMENT VIEW */}
+            {/* MATERIAL MOVE */}
+            {activeView === "Material Move" && (
+              <Card
+                elevation={0}
+                sx={{
+                  p: { xs: 3, md: 5 },
+                  borderRadius: 4,
+                  border: "1px solid #E2E8F0",
+                  maxWidth: 900,
+                  mx: "auto",
+                }}
+              >
+                <Stepper
+                  activeStep={materialStep}
+                  alternativeLabel
+                  sx={{ mb: 6 }}
+                >
+                  {[
+                    "Routing & Schedule",
+                    "Material Compliance",
+                    "Physical Logistics",
+                  ].map((label) => (
+                    <Step key={label}>
+                      <StepLabel>{label}</StepLabel>
+                    </Step>
+                  ))}
+                </Stepper>
+
+                <Box component="form" sx={{ width: "100%", mt: 2 }}>
+                  {materialStep === 0 && (
+                    <Box
+                      sx={{ display: "flex", flexDirection: "column", gap: 4 }}
+                    >
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 3,
+                          flexDirection: { xs: "column", sm: "row" },
+                        }}
+                      >
+                        <FormControl sx={{ flex: 1 }} required>
+                          <InputLabel>Origin Facility</InputLabel>
+                          <Select
+                            value={materialForm.originName}
+                            label="Origin Facility"
+                            onChange={(e) =>
+                              setMaterialForm({
+                                ...materialForm,
+                                originName: e.target.value,
+                              })
+                            }
+                          >
+                            {FACILITIES.map((fac) => (
+                              <MenuItem key={fac} value={fac}>
+                                {fac}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <FormControl sx={{ flex: 1 }} required>
+                          <InputLabel>Destination Facility</InputLabel>
+                          <Select
+                            value={materialForm.destName}
+                            label="Destination Facility"
+                            onChange={(e) =>
+                              setMaterialForm({
+                                ...materialForm,
+                                destName: e.target.value,
+                              })
+                            }
+                          >
+                            {FACILITIES.map((fac) => (
+                              <MenuItem key={fac} value={fac}>
+                                {fac}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </Box>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 3,
+                          flexDirection: { xs: "column", sm: "row" },
+                        }}
+                      >
+                        <TextField
+                          required
+                          type="datetime-local"
+                          label="Earliest Shipping"
+                          value={materialForm.shippingEarliest}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              shippingEarliest: e.target.value,
+                            })
+                          }
+                          onFocus={() =>
+                            setDateFocus((prev) => ({
+                              ...prev,
+                              earliest: true,
+                            }))
+                          }
+                          onBlur={() =>
+                            setDateFocus((prev) => ({
+                              ...prev,
+                              earliest: false,
+                            }))
+                          }
+                          InputLabelProps={{
+                            shrink:
+                              dateFocus.earliest ||
+                              !!materialForm.shippingEarliest,
+                          }}
+                          sx={{
+                            flex: 1,
+                            "& input": {
+                              color:
+                                dateFocus.earliest ||
+                                !!materialForm.shippingEarliest
+                                  ? "inherit"
+                                  : "transparent",
+                            },
+                          }}
+                        />
+                        <TextField
+                          required
+                          type="datetime-local"
+                          label="Latest Shipping"
+                          value={materialForm.shippingLatest}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              shippingLatest: e.target.value,
+                            })
+                          }
+                          onFocus={() =>
+                            setDateFocus((prev) => ({ ...prev, latest: true }))
+                          }
+                          onBlur={() =>
+                            setDateFocus((prev) => ({ ...prev, latest: false }))
+                          }
+                          InputLabelProps={{
+                            shrink:
+                              dateFocus.latest || !!materialForm.shippingLatest,
+                          }}
+                          sx={{
+                            flex: 1,
+                            "& input": {
+                              color:
+                                dateFocus.latest ||
+                                !!materialForm.shippingLatest
+                                  ? "inherit"
+                                  : "transparent",
+                            },
+                          }}
+                        />
+                      </Box>
+                    </Box>
+                  )}
+                  {materialStep === 1 && (
+                    <Box
+                      sx={{ display: "flex", flexDirection: "column", gap: 4 }}
+                    >
+                      <Alert severity="info" sx={{ borderRadius: 2 }}>
+                        Provide the exact Material Number and Batch Code for
+                        tracking.
+                      </Alert>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 3,
+                          flexDirection: { xs: "column", sm: "row" },
+                        }}
+                      >
+                        <TextField
+                          required
+                          label="Material Number"
+                          placeholder="MAT-0000"
+                          InputLabelProps={{ shrink: true }}
+                          value={materialForm.materialNumber}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              materialNumber: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                        <TextField
+                          required
+                          label="Batch / Lot Code"
+                          placeholder="LOT-9999"
+                          InputLabelProps={{ shrink: true }}
+                          value={materialForm.batchCode}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              batchCode: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                      </Box>
+                      <TextField
+                        required
+                        fullWidth
+                        label="Material Description"
+                        placeholder="Detailed description of the material..."
+                        InputLabelProps={{ shrink: true }}
+                        multiline
+                        rows={3}
+                        value={materialForm.description}
+                        onChange={(e) =>
+                          setMaterialForm({
+                            ...materialForm,
+                            description: e.target.value,
+                          })
+                        }
+                      />
+                    </Box>
+                  )}
+                  {materialStep === 2 && (
+                    <Box
+                      sx={{ display: "flex", flexDirection: "column", gap: 4 }}
+                    >
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 3,
+                          flexDirection: { xs: "column", sm: "row" },
+                        }}
+                      >
+                        <TextField
+                          required
+                          type="number"
+                          label="Pallet Count"
+                          placeholder="0"
+                          InputLabelProps={{ shrink: true }}
+                          value={materialForm.pallets}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              pallets: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                        <TextField
+                          required
+                          type="number"
+                          label="Total Weight"
+                          placeholder="0.00"
+                          InputLabelProps={{ shrink: true }}
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">
+                                lbs
+                              </InputAdornment>
+                            ),
+                          }}
+                          value={materialForm.weight}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              weight: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                      </Box>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 2,
+                          flexDirection: { xs: "column", sm: "row" },
+                          bgcolor: "#F8FAFC",
+                          p: 2,
+                          borderRadius: 2,
+                          border: "1px solid #E2E8F0",
+                        }}
+                      >
+                        <Typography
+                          variant="overline"
+                          color="text.secondary"
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            width: "100px",
+                            lineHeight: 1.2,
+                          }}
+                        >
+                          Dimensions
+                        </Typography>
+                        <TextField
+                          required
+                          type="number"
+                          label="Length"
+                          placeholder="0"
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">in</InputAdornment>
+                            ),
+                          }}
+                          value={materialForm.length}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              length: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1, bgcolor: "white" }}
+                        />
+                        <TextField
+                          required
+                          type="number"
+                          label="Width"
+                          placeholder="0"
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">in</InputAdornment>
+                            ),
+                          }}
+                          value={materialForm.width}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              width: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1, bgcolor: "white" }}
+                        />
+                        <TextField
+                          required
+                          type="number"
+                          label="Height"
+                          placeholder="0"
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end">in</InputAdornment>
+                            ),
+                          }}
+                          value={materialForm.height}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              height: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1, bgcolor: "white" }}
+                        />
+                      </Box>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          gap: 3,
+                          flexDirection: { xs: "column", sm: "row" },
+                        }}
+                      >
+                        <FormControl
+                          variant="outlined"
+                          sx={{ flex: 1 }}
+                          required
+                        >
+                          <InputLabel>Carrier Equipment Needed</InputLabel>
+                          <Select
+                            label="Carrier Equipment Needed"
+                            value={materialForm.carrier}
+                            onChange={(e) =>
+                              setMaterialForm({
+                                ...materialForm,
+                                carrier: e.target.value,
+                              })
+                            }
+                          >
+                            {CARRIER_EQUIP.map((equip) => (
+                              <MenuItem key={equip} value={equip}>
+                                {equip}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <Box sx={{ flex: 1 }} />
+                      </Box>
+                      <Box sx={{ mt: 1 }}>
+                        <Typography
+                          variant="overline"
+                          color="text.secondary"
+                          sx={{ display: "block", mb: 1 }}
+                        >
+                          Supporting Documentation (Optional)
+                        </Typography>
+                        <input
+                          type="file"
+                          style={{ display: "none" }}
+                          id="material-file-upload"
+                          onChange={(e) => setMaterialFile(e.target.files[0])}
+                        />
+                        <Box
+                          sx={{ display: "flex", alignItems: "center", gap: 2 }}
+                        >
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            startIcon={<AttachFileIcon />}
+                            onClick={() =>
+                              document
+                                .getElementById("material-file-upload")
+                                .click()
+                            }
+                          >
+                            Attach File
+                          </Button>
+                          {materialFile && (
+                            <Chip
+                              label={materialFile.name}
+                              onDelete={() => setMaterialFile(null)}
+                              size="small"
+                            />
+                          )}
+                        </Box>
+                      </Box>
+                    </Box>
+                  )}
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      mt: 6,
+                      pt: 3,
+                      borderTop: "1px solid #E2E8F0",
+                    }}
+                  >
+                    {materialStep > 0 ? (
+                      <Button
+                        variant="contained"
+                        onClick={() => setMaterialStep((prev) => prev - 1)}
+                        sx={{
+                          bgcolor: "#E2E8F0",
+                          color: "#1E293B",
+                          "&:hover": { bgcolor: "#CBD5E1" },
+                        }}
+                      >
+                        Back
+                      </Button>
+                    ) : (
+                      <Box />
+                    )}
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      disabled={!isMaterialStepComplete()}
+                      onClick={() => {
+                        if (materialStep === 2) {
+                          handleMaterialSubmit();
+                        } else {
+                          setMaterialStep((prev) => prev + 1);
+                        }
+                      }}
+                    >
+                      {materialStep === 2 ? "Submit Request" : "Next Step"}
+                    </Button>
+                  </Box>
+                </Box>
+              </Card>
+            )}
+
+            {/* USER MANAGEMENT */}
             {activeView === "User Management" &&
               currentUser.role === "Admin" && (
                 <TableContainer
@@ -1784,7 +2557,6 @@ export default function App() {
                           {selectedTransfer.origin} → {selectedTransfer.dest}
                         </Typography>
                       </Box>
-
                       <Box textAlign="right">
                         <Typography variant="overline" color="text.secondary">
                           Current Status
@@ -2005,6 +2777,22 @@ export default function App() {
               onClose={() => setIsChangePasswordOpen(false)}
               currentUser={currentUser}
             />
+
+            {/* NEW: LIVE SYSTEM UPDATE TOAST */}
+            <Snackbar
+              open={liveToast.open}
+              autoHideDuration={4000}
+              onClose={() => setLiveToast({ open: false, message: "" })}
+              anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            >
+              <Alert
+                onClose={() => setLiveToast({ open: false, message: "" })}
+                severity="info"
+                sx={{ width: "100%", boxShadow: 3 }}
+              >
+                {liveToast.message}
+              </Alert>
+            </Snackbar>
           </Container>
         </Box>
       </Box>

@@ -52,8 +52,10 @@ export default function Login({ setCurrentUser, setAuthMode }) {
       } else {
         setError(data.message || "Authentication failed. Please try again.");
       }
-    } catch (err) {
-      setError("Failed to connect to the server. Please check your network.");
+    } catch {
+      console.err(
+        "Failed to connect to the server. Please check your network.",
+      );
     } finally {
       setLoading(false);
     }
@@ -99,7 +101,7 @@ export default function Login({ setCurrentUser, setAuthMode }) {
           fontWeight="bold"
           textAlign="center"
         >
-          Ice River Logistics
+          Logistics Portal
         </Typography>
         <Typography
           variant="body2"

@@ -3,23 +3,42 @@ const cors = require("cors");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const multer = require("multer"); // NEW: File upload library
-const fs = require("fs"); // NEW: File system library
-const path = require("path"); // NEW: Path library
+const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
 require("dotenv").config();
+
+// NEW: Required for WebSockets
+const http = require("http");
+const { Server } = require("socket.io");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// NEW: Create an uploads directory and configure static file serving
+// NEW: Create an HTTP server and attach Socket.io to it
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Allow all origins for the trial app
+    methods: ["GET", "POST", "PUT"],
+  },
+});
+
+// NEW: Listen for WebSocket connections
+io.on("connection", (socket) => {
+  console.log(`User connected to live feed: ${socket.id}`);
+  socket.on("disconnect", () => {
+    console.log(`User disconnected: ${socket.id}`);
+  });
+});
+
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
 app.use("/uploads", express.static(uploadDir));
 
-// NEW: Configure Multer storage engine
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
@@ -34,7 +53,6 @@ const upload = multer({ storage: storage });
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-corporate-key-2026";
 
-// 1. Database Connection
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "db",
   user: process.env.DB_USER || "root",
@@ -90,7 +108,6 @@ async function initializeDatabase() {
       `CREATE TABLE IF NOT EXISTS transfer_requests (id INT AUTO_INCREMENT PRIMARY KEY, tracking_number VARCHAR(50), submitted_by VARCHAR(255), department VARCHAR(255), origin_name VARCHAR(255), origin_address VARCHAR(255), origin_attn VARCHAR(255), destination_name VARCHAR(255), destination_address VARCHAR(255), destination_attn VARCHAR(255), shipping_earliest VARCHAR(255), shipping_latest VARCHAR(255), receiving_earliest VARCHAR(255), receiving_latest VARCHAR(255), status VARCHAR(255) DEFAULT 'Pending Executive Approval', timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
     );
 
-    // Migration checks for new columns
     try {
       await pool.query(
         "ALTER TABLE transfer_requests ADD COLUMN tracking_number VARCHAR(50)",
@@ -106,10 +123,26 @@ async function initializeDatabase() {
         "ALTER TABLE transfer_requests ADD COLUMN attachment_url VARCHAR(255)",
       );
     } catch (e) {}
+    try {
+      await pool.query(
+        "ALTER TABLE transfer_requests ADD COLUMN type VARCHAR(50) DEFAULT 'Equipment'",
+      );
+    } catch (e) {}
+    try {
+      await pool.query(
+        "ALTER TABLE transfer_requests ADD COLUMN carrier VARCHAR(100)",
+      );
+    } catch (e) {}
 
     await pool.query(
       `CREATE TABLE IF NOT EXISTS material_items (id INT AUTO_INCREMENT PRIMARY KEY, request_id INT, material_number VARCHAR(255), description TEXT, pallets INT, pallet_positions INT, weight DECIMAL(10,2), dimensions VARCHAR(255), FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE)`,
     );
+    try {
+      await pool.query(
+        "ALTER TABLE material_items ADD COLUMN batch_code VARCHAR(255)",
+      );
+    } catch (e) {}
+
     await pool.query(
       `CREATE TABLE IF NOT EXISTS equipment_items (id INT AUTO_INCREMENT PRIMARY KEY, request_id INT, project_code VARCHAR(255), hs_code VARCHAR(255), description TEXT, pallets INT, pallet_positions INT, weight DECIMAL(10,2), dimensions VARCHAR(255), unit_value DECIMAL(10,2), manufacturer VARCHAR(255), serial_number VARCHAR(255), country_of_origin VARCHAR(255), FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE)`,
     );
@@ -237,12 +270,10 @@ app.post("/api/register", async (req, res) => {
       [email.toLowerCase().trim()],
     );
     if (existingUser.length > 0)
-      return res
-        .status(400)
-        .json({
-          status: "Error",
-          message: "An account with this email already exists.",
-        });
+      return res.status(400).json({
+        status: "Error",
+        message: "An account with this email already exists.",
+      });
     const hashedPassword = await bcrypt.hash(password, 10);
     const [result] = await pool.query(
       "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, 'Requester')",
@@ -261,12 +292,10 @@ app.post("/api/register", async (req, res) => {
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: "8h" });
     res.json({ status: "Success", user, token });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        status: "Error",
-        message: "Database error during registration.",
-      });
+    res.status(500).json({
+      status: "Error",
+      message: "Database error during registration.",
+    });
   }
 });
 
@@ -380,7 +409,7 @@ app.get("/api/dashboard-stats", authenticateToken, async (req, res) => {
   }
 });
 
-// --- CORE DATA PIPELINE (UPDATED WITH MULTER UPLOAD) ---
+// --- CORE DATA PIPELINE ---
 app.post(
   "/api/equipment-transfers",
   authenticateToken,
@@ -402,7 +431,6 @@ app.post(
       carrier,
     } = req.body;
 
-    // Capture File Info
     const attachmentName = req.file ? req.file.originalname : null;
     const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : null;
 
@@ -417,7 +445,7 @@ app.post(
       const trackingNumber = `TRX-${randomStr}`;
 
       const [transferResult] = await connection.query(
-        `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest, attachment_name, attachment_url) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest, attachment_name, attachment_url, type, carrier) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?, ?, ?, 'Equipment', ?)`,
         [
           trackingNumber,
           req.user.email,
@@ -427,6 +455,7 @@ app.post(
           shippingLatest,
           attachmentName,
           attachmentUrl,
+          carrier,
         ],
       );
 
@@ -452,6 +481,12 @@ app.post(
       );
 
       await connection.commit();
+
+      // NEW: Broadcast to all connected clients that the registry has changed!
+      io.emit("registryUpdate", {
+        message: "New equipment transfer submitted",
+      });
+
       res.json({
         status: "Success",
         message: "Equipment Move successfully submitted!",
@@ -459,12 +494,100 @@ app.post(
       });
     } catch (error) {
       await connection.rollback();
-      res
-        .status(500)
-        .json({
-          status: "Error",
-          message: "Failed to save the transfer request.",
-        });
+      res.status(500).json({
+        status: "Error",
+        message: "Failed to save the transfer request.",
+      });
+    } finally {
+      connection.release();
+    }
+  },
+);
+
+app.post(
+  "/api/material-transfers",
+  authenticateToken,
+  upload.single("file"),
+  async (req, res) => {
+    const {
+      originName,
+      destName,
+      shippingEarliest,
+      shippingLatest,
+      materialNumber,
+      batchCode,
+      description,
+      pallets,
+      weight,
+      dimensions,
+      carrier,
+    } = req.body;
+
+    const attachmentName = req.file ? req.file.originalname : null;
+    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      let randomStr = "";
+      for (let i = 0; i < 6; i++)
+        randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+      const trackingNumber = `TRX-${randomStr}`;
+
+      const [transferResult] = await connection.query(
+        `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest, attachment_name, attachment_url, type, carrier) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?, ?, ?, 'Material', ?)`,
+        [
+          trackingNumber,
+          req.user.email,
+          originName,
+          destName,
+          shippingEarliest,
+          shippingLatest,
+          attachmentName,
+          attachmentUrl,
+          carrier,
+        ],
+      );
+
+      const newRequestId = transferResult.insertId;
+
+      await connection.query(
+        `INSERT INTO material_items (request_id, material_number, batch_code, description, pallets, weight, dimensions) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newRequestId,
+          materialNumber,
+          batchCode,
+          description,
+          pallets,
+          weight,
+          dimensions,
+        ],
+      );
+
+      await connection.query(
+        `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Submitted', 'Initial material move request submitted.')`,
+        [newRequestId, req.user.email],
+      );
+
+      await connection.commit();
+
+      // NEW: Broadcast to all connected clients
+      io.emit("registryUpdate", { message: "New material transfer submitted" });
+
+      res.json({
+        status: "Success",
+        message: "Material Move successfully submitted!",
+        requestId: trackingNumber,
+      });
+    } catch (error) {
+      await connection.rollback();
+      console.error("Material Endpoint Error:", error);
+      res.status(500).json({
+        status: "Error",
+        message: "Failed to save the material request.",
+      });
     } finally {
       connection.release();
     }
@@ -477,7 +600,7 @@ app.get("/api/transfers", authenticateToken, async (req, res) => {
       SELECT 
         COALESCE(t.tracking_number, CONCAT('TRX-', LPAD(t.id, 4, '0'))) AS id, 
         t.id AS raw_id, 
-        'Equipment' AS type, 
+        COALESCE(t.type, 'Equipment') AS type, 
         COALESCE(t.origin_name, 'TBD') AS origin, 
         COALESCE(t.destination_name, 'TBD') AS dest, 
         COALESCE(u.name, t.submitted_by) AS initiator, 
@@ -504,6 +627,10 @@ app.post("/api/transfers/:id/logs", authenticateToken, async (req, res) => {
       `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Commented', ?)`,
       [requestId, req.user.email, text],
     );
+
+    // NEW: Broadcast comment update
+    io.emit("transferUpdate", { transferId: requestId, action: "Commented" });
+
     res.json({ status: "Success", message: "Update posted successfully!" });
   } catch (error) {
     res
@@ -565,12 +692,10 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
     if (!isAuthorized) {
       await connection.rollback();
       connection.release();
-      return res
-        .status(403)
-        .json({
-          status: "Error",
-          message: `Access Denied: Your role (${userRole}) is not authorized to approve this step.`,
-        });
+      return res.status(403).json({
+        status: "Error",
+        message: `Access Denied: Your role (${userRole}) is not authorized to approve this step.`,
+      });
     }
 
     let newStatus = currentStatus;
@@ -607,6 +732,14 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
     );
 
     await connection.commit();
+
+    // NEW: Broadcast the status change! Everyone's table will update instantly.
+    io.emit("registryUpdate", {
+      message: "Status changed",
+      transferId: requestId,
+      newStatus,
+    });
+
     res.json({ status: "Success", newStatus });
   } catch (error) {
     await connection.rollback();
@@ -618,7 +751,8 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
   }
 });
 
-app.listen(PORT, async () => {
-  console.log(`Logistics API running on port ${PORT}`);
+// NEW: Use server.listen instead of app.listen to support WebSockets
+server.listen(PORT, async () => {
+  console.log(`Logistics API & WebSocket running on port ${PORT}`);
   await initializeDatabase();
 });

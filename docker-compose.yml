@@ -1,36 +1,7 @@
 version: '3.8'
 
 services:
-  db:
-    image: mysql:8.0
-    restart: always
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: logistics.IceRiver@2026!
-      MYSQL_DATABASE: logistics_portal
-    volumes:
-      - mysql_data:/var/lib/mysql
-
-  backend:
-    build: ./backend
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-    environment:
-      - PORT=5000
-      - DB_HOST=db
-      - DB_USER=root
-      - DB_PASSWORD=logistics.IceRiver@2026!
-      - DB_NAME=logistics_portal
-      - JWT_SECRET=super-secret-corporate-key-2026
-    command: npm run dev
-    depends_on:
-      - db
-
-  frontend:
+   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
@@ -38,9 +9,34 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - VITE_API_URL=http://localhost:5000
+      - CHOKIDAR_USEPOLLING=true
+
+   backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=logistics.IceRiver@2026!
+      - DB_NAME=logistics_portal
+      - TZ=America/Toronto
     depends_on:
-      - backend
+      - db
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./backend/uploads:/app/uploads 
+   db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=logistics.IceRiver@2026!
+      - MYSQL_DATABASE=logistics_portal
+      - TZ=America/Toronto
+    volumes:
+      - db_data:/var/lib/mysql 
 
 volumes:
-  mysql_data:
+  db_data:
