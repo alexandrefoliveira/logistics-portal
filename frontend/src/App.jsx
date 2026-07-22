@@ -78,6 +78,9 @@ import Login from "./components/Login";
 import ChangePassword from "./components/ChangePassword";
 import ResetPassword from "./components/ResetPassword";
 
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+
 const theme = createTheme({
   palette: {
     primary: { main: "#0A2540" },
@@ -155,6 +158,25 @@ const FACILITIES = [
   "Vendor",
 ];
 
+// NEW STREAMLINED 4-STEP TIMELINE
+const TIMELINE_STEPS = [
+  "Pending Logistics Quote",
+  "Pending Requester Approval",
+  "Approved - Pending Booking",
+  "Carrier Booked",
+];
+
+const getActiveTimelineStep = (status) => {
+  if (status === "REJECTED") return 0;
+  const flow = [
+    "Pending Logistics Quote",
+    "Pending Requester Approval",
+    "Approved - Pending Booking",
+    "Carrier Booked",
+  ];
+  return flow.indexOf(status) > -1 ? flow.indexOf(status) : 0;
+};
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeView, setActiveView] = useState("Dashboard");
@@ -188,6 +210,7 @@ export default function App() {
     unitValue: "",
     description: "",
     pallets: "",
+    palletPositions: "",
     weight: "",
     length: "",
     width: "",
@@ -206,6 +229,7 @@ export default function App() {
     batchCode: "",
     description: "",
     pallets: "",
+    palletPositions: "",
     weight: "",
     length: "",
     width: "",
@@ -225,6 +249,7 @@ export default function App() {
   const [updatesMap, setUpdatesMap] = useState({});
   const [newUpdateText, setNewUpdateText] = useState("");
   const [workflowComment, setWorkflowComment] = useState("");
+  const [workflowRate, setWorkflowRate] = useState("");
 
   const isStepComplete = () => {
     if (equipStep === 0)
@@ -245,6 +270,7 @@ export default function App() {
     if (equipStep === 2)
       return (
         equipForm.pallets &&
+        equipForm.palletPositions &&
         equipForm.weight &&
         equipForm.length &&
         equipForm.width &&
@@ -271,6 +297,7 @@ export default function App() {
     if (materialStep === 2)
       return (
         materialForm.pallets &&
+        materialForm.palletPositions &&
         materialForm.weight &&
         materialForm.length &&
         materialForm.width &&
@@ -333,7 +360,6 @@ export default function App() {
           });
         }
 
-        // NEW FIX: When a status changes (which includes an approval comment), pull the new comment down instantly
         fetch(`${backendUrl}/api/transfers/${data.transferId}/logs`, {
           headers: { Authorization: `Bearer ${token}` },
         })
@@ -356,7 +382,6 @@ export default function App() {
           message: `System Update: New comment posted on a transfer.`,
         });
 
-        // NEW FIX: When someone posts a raw comment via the text box, instantly pull the logs down
         const token = localStorage.getItem("logistics_token");
         const fetchUrl =
           window.location.hostname === "localhost"
@@ -525,6 +550,7 @@ export default function App() {
         unitValue: "",
         description: "",
         pallets: "",
+        palletPositions: "",
         weight: "",
         length: "",
         width: "",
@@ -589,6 +615,7 @@ export default function App() {
         batchCode: "",
         description: "",
         pallets: "",
+        palletPositions: "",
         weight: "",
         length: "",
         width: "",
@@ -608,6 +635,7 @@ export default function App() {
     setSelectedTransfer(transfer);
     setNewUpdateText("");
     setWorkflowComment("");
+    setWorkflowRate("");
     setIsReviewModalOpen(true);
 
     try {
@@ -658,8 +686,7 @@ export default function App() {
 
       const data = await response.json();
       if (data.status === "Success") {
-        setNewUpdateText(""); // Instantly clear the text box for the active user
-        // We do NOT need to call openReviewModal() anymore, the WebSocket handles the state update!
+        setNewUpdateText("");
       }
     } catch (err) {
       console.error(err);
@@ -674,6 +701,18 @@ export default function App() {
         window.location.hostname === "localhost"
           ? "http://localhost:5000"
           : `http://${window.location.hostname}:5000`;
+
+      let nextStatus = "";
+      if (action === "Reject") {
+        nextStatus = "REJECTED";
+      } else if (action === "Submit Quote") {
+        nextStatus = "Pending Requester Approval";
+      } else if (action === "Approve Rate") {
+        nextStatus = "Approved - Pending Booking";
+      } else if (action === "Mark Booked") {
+        nextStatus = "Carrier Booked";
+      }
+
       const response = await fetch(
         `${backendUrl}/api/transfers/${selectedTransfer.raw_id}/status`,
         {
@@ -682,7 +721,11 @@ export default function App() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ action, comment: workflowComment }),
+          body: JSON.stringify({
+            status: nextStatus,
+            comment: workflowComment,
+            rate: workflowRate,
+          }),
         },
       );
 
@@ -749,41 +792,138 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  const handleGeneratePDF = () => {
+    if (!selectedTransfer) return;
+
+    const doc = new jsPDF();
+
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.text("Request for Quote", 105, 20, { align: "center" });
+
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(`No: ${selectedTransfer.id}`, 195, 20, { align: "right" });
+
+    doc.setFont("helvetica", "bold");
+    doc.text("From:", 14, 35);
+    doc.text("To:", 105, 35);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(`Name: ${selectedTransfer.origin}`, 14, 42);
+    doc.text(`Address: ${selectedTransfer.origin} Facility`, 14, 49);
+
+    doc.text(`Name: ${selectedTransfer.dest}`, 105, 42);
+    doc.text(`Address: ${selectedTransfer.dest} Facility`, 105, 49);
+
+    doc.setFont("helvetica", "bold");
+    doc.text("Shipping Window", 14, 65);
+    doc.text("Receiving Window", 105, 65);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(
+      `Earliest: ${selectedTransfer.shippingEarliest ? selectedTransfer.shippingEarliest.replace("T", " ") : "TBD"}`,
+      14,
+      72,
+    );
+    doc.text(
+      `Latest: ${selectedTransfer.shippingLatest ? selectedTransfer.shippingLatest.replace("T", " ") : "TBD"}`,
+      14,
+      79,
+    );
+
+    doc.text(`Earliest: TBD`, 105, 72);
+    doc.text(`Latest: TBD`, 105, 79);
+
+    const itemNumber =
+      selectedTransfer.type === "Equipment"
+        ? selectedTransfer.equipId
+        : selectedTransfer.materialNumber;
+    const itemDesc = selectedTransfer.description || "N/A";
+
+    autoTable(doc, {
+      startY: 90,
+      head: [
+        [
+          "Number",
+          "Material Description",
+          "Pallets",
+          "Positions",
+          "Weight",
+          "Dimensions",
+        ],
+      ],
+      body: [
+        [
+          itemNumber || "N/A",
+          itemDesc,
+          selectedTransfer.pallets || "0",
+          selectedTransfer.palletPositions || "0",
+          `${selectedTransfer.weight || "0"} lbs`,
+          selectedTransfer.dimensions || "N/A",
+        ],
+      ],
+      theme: "grid",
+      headStyles: { fillColor: [10, 37, 64] },
+    });
+
+    const finalY = doc.lastAutoTable.finalY || 110;
+
+    doc.setFont("helvetica", "bold");
+    doc.text("HS Code:", 14, finalY + 15);
+    doc.setFont("helvetica", "normal");
+    doc.text(selectedTransfer.hsCode || "N/A", 35, finalY + 15);
+
+    doc.setFont("helvetica", "bold");
+    doc.text("Carrier Equipment Needed:", 14, finalY + 25);
+    doc.setFont("helvetica", "normal");
+    doc.text(selectedTransfer.carrier || "N/A", 65, finalY + 25);
+
+    doc.setFont("helvetica", "bold");
+    doc.text("Authorized Approvals:", 14, finalY + 45);
+    doc.setFont("helvetica", "normal");
+
+    const logs = updatesMap[selectedTransfer.raw_id] || [];
+    const approvals = logs.filter(
+      (log) => log.text && log.text.includes("Workflow Decision"),
+    );
+
+    let approvalY = finalY + 52;
+    if (approvals.length === 0) {
+      doc.text("No formal approvals recorded yet.", 14, approvalY);
+    } else {
+      [...approvals].reverse().forEach((appr) => {
+        doc.text(`- ${appr.user_name} on ${appr.date}`, 14, approvalY);
+        approvalY += 7;
+      });
+    }
+
+    doc.save(`RFQ_${selectedTransfer.id}.pdf`);
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
-      case "COMPLETED":
+      case "Carrier Booked":
         return "success";
       case "REJECTED":
         return "error";
-      case "Pending Executive Approval":
-        return "default";
-      case "Pending Quality Value Confirmation":
-        return "secondary";
-      case "Pending Plant Manager Coordination":
+      case "Pending Logistics Quote":
         return "warning";
-      case "Pending Planning & Scheduling":
+      case "Pending Requester Approval":
         return "info";
-      case "Pending Execution & Lab Reporting":
-        return "primary";
-      case "Pending Final Executive Sign-Off":
+      case "Approved - Pending Booking":
         return "secondary";
-      case "Pending Quality Assurance Close-Out":
-        return "success";
       default:
-        return "warning";
+        return "default";
     }
   };
 
   const hasAccessToApprove = (status, role) => {
     if (role === "Admin") return true;
     const allowedRoles = {
-      "Pending Executive Approval": ["Executive"],
-      "Pending Quality Value Confirmation": ["Quality Auditor"],
-      "Pending Plant Manager Coordination": ["Plant Manager"],
-      "Pending Planning & Scheduling": ["Planner"],
-      "Pending Execution & Lab Reporting": ["Plant Manager"],
-      "Pending Final Executive Sign-Off": ["Executive"],
-      "Pending Quality Assurance Close-Out": ["Quality Auditor"],
+      "Pending Logistics Quote": ["Logistics Coordinator"],
+      "Pending Requester Approval": ["Requester", "Management", "Executive"],
+      "Approved - Pending Booking": ["Logistics Coordinator"],
     };
     return allowedRoles[status]?.includes(role) || false;
   };
@@ -798,7 +938,7 @@ export default function App() {
 
   const pendingActionsForUser = transfers.filter(
     (t) =>
-      t.status !== "COMPLETED" &&
+      t.status !== "Carrier Booked" &&
       t.status !== "REJECTED" &&
       hasAccessToApprove(t.status, currentUser?.role),
   );
@@ -1756,6 +1896,21 @@ export default function App() {
                         <TextField
                           required
                           type="number"
+                          label="Pallet Positions"
+                          placeholder="0"
+                          InputLabelProps={{ shrink: true }}
+                          value={equipForm.palletPositions}
+                          onChange={(e) =>
+                            setEquipForm({
+                              ...equipForm,
+                              palletPositions: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                        <TextField
+                          required
+                          type="number"
                           label="Total Weight"
                           placeholder="0.00"
                           InputLabelProps={{ shrink: true }}
@@ -2223,6 +2378,21 @@ export default function App() {
                         <TextField
                           required
                           type="number"
+                          label="Pallet Positions"
+                          placeholder="0"
+                          InputLabelProps={{ shrink: true }}
+                          value={materialForm.palletPositions}
+                          onChange={(e) =>
+                            setMaterialForm({
+                              ...materialForm,
+                              palletPositions: e.target.value,
+                            })
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                        <TextField
+                          required
+                          type="number"
                           label="Total Weight"
                           placeholder="0.00"
                           InputLabelProps={{ shrink: true }}
@@ -2491,9 +2661,8 @@ export default function App() {
                                 {[
                                   "Admin",
                                   "Executive",
-                                  "Quality Auditor",
-                                  "Plant Manager",
-                                  "Planner",
+                                  "Management",
+                                  "Logistics Coordinator", // NEW ROLE
                                   "Requester",
                                   "Read-Only",
                                 ].map((role) => (
@@ -2542,6 +2711,30 @@ export default function App() {
                     </IconButton>
                   </DialogTitle>
                   <DialogContent dividers sx={{ p: 4, bgcolor: "#F8FAFC" }}>
+                    {/* NEW 4-STEP TIMELINE UI */}
+                    <Box
+                      sx={{ width: "100%", mb: 5, mt: 2, overflowX: "auto" }}
+                    >
+                      <Stepper
+                        activeStep={getActiveTimelineStep(
+                          selectedTransfer.status,
+                        )}
+                        alternativeLabel
+                      >
+                        {TIMELINE_STEPS.map((label, index) => {
+                          const isError =
+                            selectedTransfer.status === "REJECTED" &&
+                            getActiveTimelineStep(selectedTransfer.status) ===
+                              index;
+                          return (
+                            <Step key={label}>
+                              <StepLabel error={isError}>{label}</StepLabel>
+                            </Step>
+                          );
+                        })}
+                      </Stepper>
+                    </Box>
+
                     <Box
                       sx={{
                         display: "flex",
@@ -2601,7 +2794,196 @@ export default function App() {
                       </Box>
                     )}
 
-                    {selectedTransfer.status !== "COMPLETED" &&
+                    {/* DETAILED TRANSFER VIEW */}
+                    <Box
+                      sx={{
+                        mb: 3,
+                        p: 2,
+                        bgcolor: "white",
+                        borderRadius: 2,
+                        border: "1px solid #E2E8F0",
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          mb: 2,
+                        }}
+                      >
+                        <Typography
+                          variant="subtitle2"
+                          color="primary"
+                          sx={{ fontWeight: "bold" }}
+                        >
+                          Full Transfer Details
+                        </Typography>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<FileDownloadIcon />}
+                          onClick={handleGeneratePDF}
+                        >
+                          Export RFQ (PDF)
+                        </Button>
+                      </Box>
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                          gap: 2,
+                        }}
+                      >
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Earliest Shipping
+                          </Typography>
+                          <Typography variant="body2" fontWeight="500">
+                            {selectedTransfer.shippingEarliest
+                              ? selectedTransfer.shippingEarliest.replace(
+                                  "T",
+                                  " ",
+                                )
+                              : "N/A"}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Latest Shipping
+                          </Typography>
+                          <Typography variant="body2" fontWeight="500">
+                            {selectedTransfer.shippingLatest
+                              ? selectedTransfer.shippingLatest.replace(
+                                  "T",
+                                  " ",
+                                )
+                              : "N/A"}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Carrier Equipment Needed
+                          </Typography>
+                          <Typography variant="body2" fontWeight="500">
+                            {selectedTransfer.carrier || "N/A"}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Pallets, Positions & Weight
+                          </Typography>
+                          <Typography variant="body2" fontWeight="500">
+                            {selectedTransfer.pallets} Pallets (
+                            {selectedTransfer.palletPositions || "0"} Pos),{" "}
+                            {selectedTransfer.weight} lbs
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Dimensions
+                          </Typography>
+                          <Typography variant="body2" fontWeight="500">
+                            {selectedTransfer.dimensions || "N/A"}
+                          </Typography>
+                        </Box>
+
+                        {selectedTransfer.type === "Equipment" && (
+                          <>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                Equipment ID / Project
+                              </Typography>
+                              <Typography variant="body2" fontWeight="500">
+                                {selectedTransfer.equipId || "N/A"} /{" "}
+                                {selectedTransfer.projectCode || "N/A"}
+                              </Typography>
+                            </Box>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                HS Code / Unit Value
+                              </Typography>
+                              <Typography variant="body2" fontWeight="500">
+                                {selectedTransfer.hsCode || "N/A"} / $
+                                {selectedTransfer.unitValue || "0.00"}
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+
+                        {selectedTransfer.type === "Material" && (
+                          <>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                Material Number
+                              </Typography>
+                              <Typography variant="body2" fontWeight="500">
+                                {selectedTransfer.materialNumber || "N/A"}
+                              </Typography>
+                            </Box>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                Batch / Lot Code
+                              </Typography>
+                              <Typography variant="body2" fontWeight="500">
+                                {selectedTransfer.batchCode || "N/A"}
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+                        <Box sx={{ gridColumn: { sm: "span 2" } }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Commodity Description
+                          </Typography>
+                          <Typography variant="body2" fontWeight="500">
+                            {selectedTransfer.description || "N/A"}
+                          </Typography>
+                        </Box>
+
+                        {selectedTransfer.secured_rate && (
+                          <Box
+                            sx={{
+                              gridColumn: { sm: "span 2" },
+                              mt: 2,
+                              p: 2,
+                              bgcolor: "#F0FDF4",
+                              borderRadius: 2,
+                              border: "1px solid #10B981",
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              color="success.main"
+                              fontWeight="bold"
+                            >
+                              Secured Shipping Rate
+                            </Typography>
+                            <Typography
+                              variant="h6"
+                              color="success.main"
+                              fontWeight="bold"
+                            >
+                              ${selectedTransfer.secured_rate}
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    </Box>
+
+                    {/* DYNAMIC WORKFLOW DECISION BOX */}
+                    {selectedTransfer.status !== "Carrier Booked" &&
                       selectedTransfer.status !== "REJECTED" &&
                       hasAccessToApprove(
                         selectedTransfer.status,
@@ -2621,18 +3003,47 @@ export default function App() {
                             color="primary"
                             sx={{ mb: 1, fontWeight: "bold" }}
                           >
-                            Workflow Decision
+                            Workflow Decision ({currentUser.role})
                           </Typography>
-                          <TextField
-                            fullWidth
-                            size="small"
-                            placeholder="Required: Please provide a reason for approval or rejection..."
-                            value={workflowComment}
-                            onChange={(e) => setWorkflowComment(e.target.value)}
-                            multiline
-                            rows={2}
-                            sx={{ bgcolor: "white", mb: 2 }}
-                          />
+
+                          {selectedTransfer.status ===
+                            "Pending Logistics Quote" && (
+                            <TextField
+                              fullWidth
+                              size="small"
+                              label="Secured Shipping Rate ($)"
+                              placeholder="e.g. 1200.00"
+                              type="number"
+                              value={workflowRate}
+                              onChange={(e) => setWorkflowRate(e.target.value)}
+                              InputProps={{
+                                startAdornment: (
+                                  <InputAdornment position="start">
+                                    $
+                                  </InputAdornment>
+                                ),
+                              }}
+                              sx={{ bgcolor: "white", mb: 2 }}
+                              required
+                            />
+                          )}
+
+                          {selectedTransfer.status !==
+                            "Approved - Pending Booking" && (
+                            <TextField
+                              fullWidth
+                              size="small"
+                              placeholder="Required: Please provide a note or reason..."
+                              value={workflowComment}
+                              onChange={(e) =>
+                                setWorkflowComment(e.target.value)
+                              }
+                              multiline
+                              rows={2}
+                              sx={{ bgcolor: "white", mb: 2 }}
+                            />
+                          )}
+
                           <Box
                             sx={{
                               display: "flex",
@@ -2640,24 +3051,63 @@ export default function App() {
                               justifyContent: "flex-end",
                             }}
                           >
-                            <Button
-                              variant="outlined"
-                              color="error"
-                              size="small"
-                              onClick={() => handleUpdateStatus("Reject")}
-                              disabled={!workflowComment.trim()}
-                            >
-                              Reject
-                            </Button>
-                            <Button
-                              variant="contained"
-                              color="success"
-                              size="small"
-                              onClick={() => handleUpdateStatus("Approve")}
-                              disabled={!workflowComment.trim()}
-                            >
-                              Approve
-                            </Button>
+                            {selectedTransfer.status ===
+                              "Pending Logistics Quote" && (
+                              <Button
+                                variant="contained"
+                                color="success"
+                                size="small"
+                                onClick={() =>
+                                  handleUpdateStatus("Submit Quote")
+                                }
+                                disabled={
+                                  !workflowComment.trim() ||
+                                  !workflowRate.trim()
+                                }
+                              >
+                                Submit Quote for Approval
+                              </Button>
+                            )}
+
+                            {selectedTransfer.status ===
+                              "Pending Requester Approval" && (
+                              <>
+                                <Button
+                                  variant="outlined"
+                                  color="error"
+                                  size="small"
+                                  onClick={() => handleUpdateStatus("Reject")}
+                                  disabled={!workflowComment.trim()}
+                                >
+                                  Reject Quote
+                                </Button>
+                                <Button
+                                  variant="contained"
+                                  color="success"
+                                  size="small"
+                                  onClick={() =>
+                                    handleUpdateStatus("Approve Rate")
+                                  }
+                                  disabled={!workflowComment.trim()}
+                                >
+                                  Approve Rate
+                                </Button>
+                              </>
+                            )}
+
+                            {selectedTransfer.status ===
+                              "Approved - Pending Booking" && (
+                              <Button
+                                variant="contained"
+                                color="primary"
+                                size="small"
+                                onClick={() =>
+                                  handleUpdateStatus("Mark Booked")
+                                }
+                              >
+                                Mark Carrier as Booked
+                              </Button>
+                            )}
                           </Box>
                         </Box>
                       )}
@@ -2778,7 +3228,6 @@ export default function App() {
               currentUser={currentUser}
             />
 
-            {/* NEW: LIVE SYSTEM UPDATE TOAST */}
             <Snackbar
               open={liveToast.open}
               autoHideDuration={4000}

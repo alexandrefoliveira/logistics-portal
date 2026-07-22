@@ -607,11 +607,47 @@ app.get("/api/transfers", authenticateToken, async (req, res) => {
         DATE_FORMAT(t.timestamp, '%b %d, %Y') AS date, 
         t.status,
         t.attachment_name AS attachmentName,
-        t.attachment_url AS attachmentUrl
-      FROM transfer_requests t LEFT JOIN users u ON t.submitted_by = u.email ORDER BY t.timestamp DESC
+        t.attachment_url AS attachmentUrl,
+        t.carrier,
+        t.shipping_earliest AS shippingEarliest,
+        t.shipping_latest AS shippingLatest,
+        
+        e.project_code AS projectCode,
+        e.hs_code AS hsCode,
+        e.description AS equipDescription,
+        e.pallets AS equipPallets,
+        e.weight AS equipWeight,
+        e.dimensions AS equipDimensions,
+        e.unit_value AS unitValue,
+        
+        m.material_number AS materialNumber,
+        m.batch_code AS batchCode,
+        m.description AS matDescription,
+        m.pallets AS matPallets,
+        m.weight AS matWeight,
+        m.dimensions AS matDimensions
+        
+      FROM transfer_requests t 
+      LEFT JOIN users u ON t.submitted_by = u.email 
+      LEFT JOIN equipment_items e ON t.id = e.request_id
+      LEFT JOIN material_items m ON t.id = m.request_id
+      ORDER BY t.timestamp DESC
     `);
-    res.json({ status: "Success", data: rows });
+
+    const formattedRows = rows.map((row) => {
+      const isEquipment = row.type === "Equipment";
+      return {
+        ...row,
+        description: isEquipment ? row.equipDescription : row.matDescription,
+        pallets: isEquipment ? row.equipPallets : row.matPallets,
+        weight: isEquipment ? row.equipWeight : row.matWeight,
+        dimensions: isEquipment ? row.equipDimensions : row.matDimensions,
+      };
+    });
+
+    res.json({ status: "Success", data: formattedRows });
   } catch (error) {
+    console.error("Fetch Transfers Error:", error);
     res
       .status(500)
       .json({ status: "Error", message: "Failed to fetch registry data." });
@@ -658,96 +694,94 @@ app.get("/api/transfers/:id/logs", authenticateToken, async (req, res) => {
 });
 
 app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
-  const { action, comment } = req.body;
-  const requestId = req.params.id;
-  const userRole = req.user.role;
-
-  const connection = await pool.getConnection();
-  await connection.beginTransaction();
+  const { status, comment, rate } = req.body;
+  const transferId = req.params.id;
 
   try {
-    const [transfer] = await connection.query(
-      "SELECT status FROM transfer_requests WHERE id = ?",
-      [requestId],
+    // 1. Fetch current transfer details to know who to email
+    const [transferRows] = await connection.query(
+      `SELECT t.*, u.full_name as initiator_name, u.email as initiator_email,
+       e.origin, e.dest 
+       FROM transfers t 
+       JOIN users u ON t.initiator_id = u.id
+       LEFT JOIN equipment_items e ON t.id = e.request_id 
+       WHERE t.id = ?`,
+      [transferId],
     );
-    if (transfer.length === 0) throw new Error("Transfer not found");
 
-    const currentStatus = transfer[0].status;
+    if (transferRows.length === 0)
+      return res.status(404).json({ status: "Error", message: "Not found" });
+    const transfer = transferRows[0];
+    const originFacility = transfer.origin; // We route based on Origin
 
-    const rbacPermissions = {
-      "Pending Executive Approval": ["Executive"],
-      "Pending Quality Value Confirmation": ["Quality Auditor"],
-      "Pending Plant Manager Coordination": ["Plant Manager"],
-      "Pending Planning & Scheduling": ["Planner"],
-      "Pending Execution & Lab Reporting": ["Plant Manager"],
-      "Pending Final Executive Sign-Off": ["Executive"],
-      "Pending Quality Assurance Close-Out": ["Quality Auditor"],
-    };
-
-    const isAuthorized =
-      userRole === "Admin" ||
-      (rbacPermissions[currentStatus] &&
-        rbacPermissions[currentStatus].includes(userRole));
-
-    if (!isAuthorized) {
-      await connection.rollback();
-      connection.release();
-      return res.status(403).json({
-        status: "Error",
-        message: `Access Denied: Your role (${userRole}) is not authorized to approve this step.`,
-      });
+    // 2. Update status (and rate if provided)
+    if (rate && rate.trim() !== "") {
+      await connection.query(
+        "UPDATE transfers SET status = ?, secured_rate = ? WHERE id = ?",
+        [status, parseFloat(rate), transferId],
+      );
+    } else {
+      await connection.query("UPDATE transfers SET status = ? WHERE id = ?", [
+        status,
+        transferId,
+      ]);
     }
 
-    let newStatus = currentStatus;
+    // 3. Log the action in Activity & Updates
+    const actionText = rate
+      ? `Workflow Decision (${status}) - Rate Secured: $${rate}\nNotes: ${comment}`
+      : `Workflow Decision (${status})\nNotes: ${comment}`;
 
-    if (action === "Reject") {
-      newStatus = "REJECTED";
-    } else if (action === "Approve") {
-      const statusFlow = {
-        "Pending Executive Approval": "Pending Quality Value Confirmation",
-        "Pending Quality Value Confirmation":
-          "Pending Plant Manager Coordination",
-        "Pending Plant Manager Coordination": "Pending Planning & Scheduling",
-        "Pending Planning & Scheduling": "Pending Execution & Lab Reporting",
-        "Pending Execution & Lab Reporting": "Pending Final Executive Sign-Off",
-        "Pending Final Executive Sign-Off":
-          "Pending Quality Assurance Close-Out",
-        "Pending Quality Assurance Close-Out": "COMPLETED",
-      };
-      newStatus = statusFlow[currentStatus] || "COMPLETED";
+    await connection.query(
+      "INSERT INTO logs (transfer_id, user_id, text) VALUES (?, ?, ?)",
+      [transferId, req.user.id, actionText],
+    );
+
+    // 4. ROUTE THE EMAILS BASED ON THE NEW STATUS
+    const coordinatorEmail =
+      coordinatorMapping[originFacility] || coordinatorMapping["Default"];
+    const senderEmail = transfer.initiator_email;
+    const reqCode = transfer.request_code; // e.g. TRX-4MQ7CS
+
+    if (status === "Pending Logistics Quote") {
+      // Only happens on initial creation, but placed here for reference
+      await sendLogisticsEmail(
+        coordinatorEmail,
+        `New Quote Required: ${reqCode}`,
+        `A new transfer request originating from ${originFacility} requires quoting.`,
+      );
+    } else if (status === "Pending Requester Approval") {
+      // Coordinator just submitted a rate. Email the Sender.
+      await sendLogisticsEmail(
+        senderEmail,
+        `Action Required: Quote Ready for ${reqCode}`,
+        `A shipping rate of $${rate} has been secured for your transfer. Please log in to approve or reject this cost.`,
+      );
+    } else if (status === "Approved - Pending Booking") {
+      // Sender approved the rate. Email the Coordinator.
+      await sendLogisticsEmail(
+        coordinatorEmail,
+        `Quote Approved: Book Carrier for ${reqCode}`,
+        `The sender (${transfer.initiator_name}) has approved the rate. Please proceed with booking the truck offline.`,
+      );
+    } else if (status === "Carrier Booked") {
+      // Coordinator booked the truck. Email the Sender.
+      await sendLogisticsEmail(
+        senderEmail,
+        `Carrier Booked: ${reqCode}`,
+        `Your transfer has been successfully booked by logistics and is now complete in the system.`,
+      );
     }
 
-    await connection.query(
-      "UPDATE transfer_requests SET status = ? WHERE id = ?",
-      [newStatus, requestId],
-    );
+    // 5. Fire live websocket update
+    io.emit("registryUpdate", { transferId, newStatus: status });
 
-    const decisionLog = comment
-      ? `Workflow Decision (${action}): ${comment}`
-      : `System: Transfer officially ${action.toLowerCase()}d. Moved to: ${newStatus}`;
-
-    await connection.query(
-      `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, ?, ?)`,
-      [requestId, req.user.email, action, decisionLog],
-    );
-
-    await connection.commit();
-
-    // NEW: Broadcast the status change! Everyone's table will update instantly.
-    io.emit("registryUpdate", {
-      message: "Status changed",
-      transferId: requestId,
-      newStatus,
-    });
-
-    res.json({ status: "Success", newStatus });
+    res.json({ status: "Success" });
   } catch (error) {
-    await connection.rollback();
+    console.error(error);
     res
       .status(500)
       .json({ status: "Error", message: "Failed to update status." });
-  } finally {
-    connection.release();
   }
 });
 
