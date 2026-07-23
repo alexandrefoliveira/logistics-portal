@@ -52,9 +52,10 @@ export default function Login({ setCurrentUser, setAuthMode }) {
       } else {
         setError(data.message || "Authentication failed. Please try again.");
       }
-    } catch {
-      console.err(
-        "Failed to connect to the server. Please check your network.",
+    } catch (err) {
+      console.error("Failed to connect to the server:", err);
+      setError(
+        "Network Error: Cannot reach the backend. Is port 5000 running?",
       );
     } finally {
       setLoading(false);

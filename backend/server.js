@@ -1,73 +1,291 @@
 const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2/promise");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const nodemailer = require("nodemailer");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const multer = require("multer");
-const fs = require("fs");
-const path = require("path");
+const crypto = require("crypto");
 require("dotenv").config();
 
-// NEW: Required for WebSockets
+// Socket.io Setup
 const http = require("http");
 const { Server } = require("socket.io");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-
-// NEW: Create an HTTP server and attach Socket.io to it
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*", // Allow all origins for the trial app
-    methods: ["GET", "POST", "PUT"],
-  },
+  cors: { origin: "*" },
 });
 
-// NEW: Listen for WebSocket connections
-io.on("connection", (socket) => {
-  console.log(`User connected to live feed: ${socket.id}`);
-  socket.on("disconnect", () => {
-    console.log(`User disconnected: ${socket.id}`);
-  });
-});
+const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || "super-secret-corporate-key-2026";
 
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Ensure upload directory exists
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
 app.use("/uploads", express.static(uploadDir));
 
+// Multer Storage Configuration
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + "-" + file.originalname.replace(/\s+/g, "_"));
+    cb(null, uniqueSuffix + path.extname(file.originalname));
   },
 });
 const upload = multer({ storage: storage });
 
-const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || "super-secret-corporate-key-2026";
-
+// Database Pool
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "db",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "logistics.IceRiver@2026!",
-  database: process.env.DB_NAME || "logistics_portal",
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 3306,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
 });
 
+// ==========================================
+// EMAIL SETUP & ROUTING DICTIONARY
+// ==========================================
+let transporter;
+async function setupMailer() {
+  try {
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "10.30.50.241",
+      port: process.env.SMTP_PORT || 25,
+      secure: false,
+      tls: { rejectUnauthorized: false },
+    });
+    await transporter.verify();
+    console.log("✉️ Internal Email Relay Connected Successfully!");
+  } catch (error) {
+    console.error("❌ Failed to connect to email server:", error);
+  }
+}
+setupMailer();
+
+const coordinatorMapping = {
+  Grafton: "grafton-logistics@iceriversprings.com",
+  Calgary: "calgary-logistics@iceriversprings.com",
+  Lachute: "lachute-logistics@iceriversprings.com",
+  Feversham: "feversham-logistics@iceriversprings.com",
+  "Feversham - BMPP": "feversham-logistics@iceriversprings.com",
+  Chilliwack: "chilliwack-logistics@iceriversprings.com",
+  "Shelburne Water": "shelburne-logistics@iceriversprings.com",
+  "Shelburne BMPR": "shelburne-logistics@iceriversprings.com",
+  "Shelburne BMPE": "shelburne-logistics@iceriversprings.com",
+  Dundalk: "dundalk-logistics@iceriversprings.com",
+  CRP: "crp-logistics@iceriversprings.com",
+  Default: "logistics-general@iceriversprings.com",
+};
+
+async function sendLogisticsEmail(toEmail, subject, text) {
+  if (!transporter) return;
+  try {
+    await transporter.sendMail({
+      from: '"Ice River Logistics" <noreply-logistics@iceriversprings.com>',
+      to: toEmail,
+      subject: subject,
+      html: `<div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #E2E8F0; border-radius: 8px;">
+                <h2 style="color: #0A2540;">${subject}</h2>
+                <p style="font-size: 16px;">${text}</p>
+                <br />
+                <hr style="border: 0; border-top: 1px solid #E2E8F0;" />
+                <p style="color: #64748B; font-size: 12px;">This is an automated system notification. Please log in to the Corporate Logistics Portal to review full details or take action.</p>
+             </div>`,
+    });
+    console.log(`\n🔔 EMAIL SENT TO: ${toEmail}\n`);
+  } catch (err) {
+    console.error("Error sending email:", err);
+  }
+}
+
+// ==========================================
+// DATABASE INITIALIZATION
+// ==========================================
+async function initializeDatabase() {
+  console.log("Checking database connection...");
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      await pool.query("SELECT 1");
+      console.log("MySQL is awake! Building tables...");
+      break;
+    } catch (error) {
+      retries -= 1;
+      console.log("Waiting for MySQL...");
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+
+  try {
+    // Users Table
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY, 
+        full_name VARCHAR(100) NOT NULL, 
+        email VARCHAR(100) UNIQUE NOT NULL, 
+        password VARCHAR(255) NOT NULL, 
+        role ENUM('Admin', 'Executive', 'Management', 'Logistics Coordinator', 'Requester', 'Read-Only') NOT NULL DEFAULT 'Requester', 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        reset_token VARCHAR(255) DEFAULT NULL,
+        reset_token_expires DATETIME DEFAULT NULL
+      )`,
+    );
+
+    try {
+      await pool.query(
+        "ALTER TABLE users MODIFY COLUMN role ENUM('Admin', 'Executive', 'Management', 'Logistics Coordinator', 'Requester', 'Read-Only') NOT NULL",
+      );
+      console.log("SUCCESS: Database users ENUM synchronized.");
+    } catch (e) {
+      console.log("Role update skipped or already applied.");
+    }
+
+    // Transfers Table
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS transfers (
+        id INT AUTO_INCREMENT PRIMARY KEY, 
+        request_code VARCHAR(20) UNIQUE NOT NULL,
+        type ENUM('Equipment', 'Material') NOT NULL,
+        initiator_id INT NOT NULL, 
+        status VARCHAR(50) DEFAULT 'Pending Logistics Quote', 
+        origin VARCHAR(100), 
+        dest VARCHAR(100), 
+        shipping_earliest DATETIME, 
+        shipping_latest DATETIME, 
+        pallets INT, 
+        pallet_positions INT, 
+        weight DECIMAL(10,2), 
+        dimensions VARCHAR(100), 
+        carrier VARCHAR(100), 
+        description TEXT,
+        equip_id VARCHAR(100),
+        project_code VARCHAR(100),
+        hs_code VARCHAR(100),
+        unit_value DECIMAL(10,2),
+        material_number VARCHAR(100),
+        batch_code VARCHAR(100),
+        secured_rate DECIMAL(10,2) DEFAULT NULL,
+        attachment_name VARCHAR(255),
+        attachment_url VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (initiator_id) REFERENCES users(id)
+      )`,
+    );
+
+    // Logs Table
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS logs (
+        id INT AUTO_INCREMENT PRIMARY KEY, 
+        transfer_id INT NOT NULL, 
+        user_id INT NOT NULL, 
+        text TEXT NOT NULL, 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (transfer_id) REFERENCES transfers(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )`,
+    );
+
+    // Seed Accounts
+    const adminPass = await bcrypt.hash("AOliveira@2026!", 10);
+    const teamPass = await bcrypt.hash("IceRiver@2026!", 10);
+
+    const teamMembers = [
+      [
+        "Alexandre Oliveira",
+        "aoliveira@iceriversprings.com",
+        adminPass,
+        "Admin",
+      ],
+      ["Dominick", "dominick@iceriversprings.com", teamPass, "Requester"],
+      ["Kevin", "kevin@iceriversprings.com", teamPass, "Requester"],
+      ["Nathan", "nathan@iceriversprings.com", teamPass, "Requester"],
+      ["Stacy", "stacy@iceriversprings.com", teamPass, "Requester"],
+      ["Livia Lima", "llima@iceriversprings.com", teamPass, "Requester"],
+      ["Colin Duncan", "cduncan@iceriversprings.com", teamPass, "Requester"],
+      ["Jennifer Horner", "jhorner@bmpextrusion.com", teamPass, "Requester"],
+      [
+        "William Legere",
+        "wlegere@bluemountainplastics.com",
+        teamPass,
+        "Requester",
+      ],
+      ["Kyle Strehl", "kstrehl@iceriversprings.com", teamPass, "Requester"],
+      [
+        "Conrad Williams",
+        "conradwilliams@iceriversprings.com",
+        teamPass,
+        "Requester",
+      ],
+      ["Daniel Gagnon", "dgagnon@iceriversprings.com", teamPass, "Requester"],
+      [
+        "Ali El-Hourani",
+        "aelhourani@iceriversprings.com",
+        teamPass,
+        "Requester",
+      ],
+      [
+        "Stephanie Fonseca",
+        "sfonseca@iceriversprings.com",
+        teamPass,
+        "Requester",
+      ],
+      [
+        "Tara Parker",
+        "tparker@bluemountainplastics.com",
+        teamPass,
+        "Requester",
+      ],
+      ["Vismay Soni", "vsoni@iceriversprings.com", teamPass, "Requester"],
+      ["Renan Lucena", "rlucena@crplastics.com", teamPass, "Requester"],
+      ["Durid Awaad", "dawaad@iceriversprings.com", teamPass, "Requester"],
+      ["Bill Harper", "bharper@iceriversprings.com", teamPass, "Requester"],
+      [
+        "Logistics Group",
+        "logistics@iceriversprings.com",
+        teamPass,
+        "Requester",
+      ],
+    ];
+
+    for (const member of teamMembers) {
+      await pool.query(
+        `INSERT INTO users (full_name, email, password, role) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE password = VALUES(password), role = VALUES(role)`,
+        member,
+      );
+    }
+
+    console.log("✅ Database tables verified and accounts seeded!");
+  } catch (error) {
+    console.error("Failed to build tables:", error);
+  }
+}
+
+// ==========================================
+// AUTHENTICATION MIDDLEWARE
+// ==========================================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
   if (!token)
-    return res.status(401).json({ status: "Error", message: "Access Denied" });
+    return res
+      .status(401)
+      .json({ status: "Error", message: "Access Denied: No Token" });
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err)
@@ -79,175 +297,29 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-async function initializeDatabase() {
-  console.log("Checking database connection...");
-  let retries = 15;
-  while (retries > 0) {
-    try {
-      await pool.query("SELECT 1");
-      console.log("MySQL is awake! Building Logistics tables...");
-      break;
-    } catch (error) {
-      retries -= 1;
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-  }
-
-  try {
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL, department VARCHAR(255), role VARCHAR(100) DEFAULT 'Requester', password VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-    );
-    try {
-      await pool.query(
-        `DELETE t1 FROM users t1 INNER JOIN users t2 WHERE t1.id > t2.id AND t1.email = t2.email`,
-      );
-      await pool.query(`ALTER TABLE users ADD UNIQUE (email)`);
-    } catch (dedupError) {}
-
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS transfer_requests (id INT AUTO_INCREMENT PRIMARY KEY, tracking_number VARCHAR(50), submitted_by VARCHAR(255), department VARCHAR(255), origin_name VARCHAR(255), origin_address VARCHAR(255), origin_attn VARCHAR(255), destination_name VARCHAR(255), destination_address VARCHAR(255), destination_attn VARCHAR(255), shipping_earliest VARCHAR(255), shipping_latest VARCHAR(255), receiving_earliest VARCHAR(255), receiving_latest VARCHAR(255), status VARCHAR(255) DEFAULT 'Pending Executive Approval', timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-    );
-
-    try {
-      await pool.query(
-        "ALTER TABLE transfer_requests ADD COLUMN tracking_number VARCHAR(50)",
-      );
-    } catch (e) {}
-    try {
-      await pool.query(
-        "ALTER TABLE transfer_requests ADD COLUMN attachment_name VARCHAR(255)",
-      );
-    } catch (e) {}
-    try {
-      await pool.query(
-        "ALTER TABLE transfer_requests ADD COLUMN attachment_url VARCHAR(255)",
-      );
-    } catch (e) {}
-    try {
-      await pool.query(
-        "ALTER TABLE transfer_requests ADD COLUMN type VARCHAR(50) DEFAULT 'Equipment'",
-      );
-    } catch (e) {}
-    try {
-      await pool.query(
-        "ALTER TABLE transfer_requests ADD COLUMN carrier VARCHAR(100)",
-      );
-    } catch (e) {}
-
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS material_items (id INT AUTO_INCREMENT PRIMARY KEY, request_id INT, material_number VARCHAR(255), description TEXT, pallets INT, pallet_positions INT, weight DECIMAL(10,2), dimensions VARCHAR(255), FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE)`,
-    );
-    try {
-      await pool.query(
-        "ALTER TABLE material_items ADD COLUMN batch_code VARCHAR(255)",
-      );
-    } catch (e) {}
-
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS equipment_items (id INT AUTO_INCREMENT PRIMARY KEY, request_id INT, project_code VARCHAR(255), hs_code VARCHAR(255), description TEXT, pallets INT, pallet_positions INT, weight DECIMAL(10,2), dimensions VARCHAR(255), unit_value DECIMAL(10,2), manufacturer VARCHAR(255), serial_number VARCHAR(255), country_of_origin VARCHAR(255), FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE)`,
-    );
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS approval_logs (id INT AUTO_INCREMENT PRIMARY KEY, request_id INT, approver_email VARCHAR(255), action VARCHAR(255), comments TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(request_id) REFERENCES transfer_requests(id) ON DELETE CASCADE)`,
-    );
-
-    const [rows] = await pool.query(`SELECT COUNT(*) AS count FROM users`);
-    if (rows[0].count === 0) {
-      console.log(
-        "Database is empty. Seeding secure accounts with new workflow roles...",
-      );
-      const teamPass = await bcrypt.hash("IceRiver@2026!", 10);
-
-      const logisticsUsers = [
-        [
-          "Alexandre Oliveira",
-          "aoliveira@iceriversprings.com",
-          "Admin",
-          teamPass,
-        ],
-        [
-          "Ali El-Hourani",
-          "aelhourani@iceriversprings.com",
-          "Executive",
-          teamPass,
-        ],
-        [
-          "Livia Lima",
-          "llima@iceriversprings.com",
-          "Quality Auditor",
-          teamPass,
-        ],
-        [
-          "Durid Awaad",
-          "dawaad@iceriversprings.com",
-          "Plant Manager",
-          teamPass,
-        ],
-        ["Colin Duncan", "cduncan@iceriversprings.com", "Planner", teamPass],
-        ["Jennifer Horner", "jhorner@bmpextrusion.com", "Requester", teamPass],
-        [
-          "William Legere",
-          "wlegere@bluemountainplastics.com",
-          "Requester",
-          teamPass,
-        ],
-        ["Kyle Strehl", "kstrehl@iceriversprings.com", "Requester", teamPass],
-        [
-          "Conrad Williams",
-          "conradwilliams@iceriversprings.com",
-          "Requester",
-          teamPass,
-        ],
-        ["Daniel Gagnon", "dgagnon@iceriversprings.com", "Requester", teamPass],
-        [
-          "Stephanie Fonseca",
-          "sfonseca@iceriversprings.com",
-          "Requester",
-          teamPass,
-        ],
-        [
-          "Tara Parker",
-          "tparker@bluemountainplastics.com",
-          "Requester",
-          teamPass,
-        ],
-        ["Vismay Soni", "vsoni@iceriversprings.com", "Requester", teamPass],
-        ["Renan Lucena", "rlucena@crplastics.com", "Requester", teamPass],
-        ["Bill Harper", "bharper@iceriversprings.com", "Requester", teamPass],
-      ];
-
-      for (const member of logisticsUsers) {
-        await pool.query(
-          `INSERT IGNORE INTO users (name, email, role, password) VALUES (?, ?, ?, ?)`,
-          member,
-        );
-      }
-      console.log("Accounts successfully seeded!");
-    }
-  } catch (error) {
-    console.error("Failed to build tables:", error);
-  }
-}
-
-// --- SECURE API ENDPOINTS ---
+// ==========================================
+// AUTHENTICATION ENDPOINTS
+// ==========================================
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   try {
-    const [users] = await pool.query(
-      "SELECT * FROM users WHERE email = ? LIMIT 1",
-      [email.toLowerCase().trim()],
-    );
+    const [users] = await pool.query("SELECT * FROM users WHERE email = ?", [
+      email,
+    ]);
     if (users.length === 0)
       return res
         .status(401)
         .json({ status: "Error", message: "Invalid credentials" });
+
     const validPassword = await bcrypt.compare(password, users[0].password);
     if (!validPassword)
       return res
         .status(401)
         .json({ status: "Error", message: "Invalid credentials" });
+
     const user = {
       id: users[0].id,
-      name: users[0].name,
+      full_name: users[0].full_name,
       email: users[0].email,
       role: users[0].role,
     };
@@ -258,248 +330,97 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-app.post("/api/register", async (req, res) => {
-  const { fullName, email, password } = req.body;
-  if (!fullName || !email || !password)
-    return res
-      .status(400)
-      .json({ status: "Error", message: "All fields are required." });
+// ==========================================
+// USER MANAGEMENT ENDPOINTS
+// ==========================================
+app.get("/api/users", authenticateToken, async (req, res) => {
   try {
-    const [existingUser] = await pool.query(
-      "SELECT email FROM users WHERE email = ? LIMIT 1",
-      [email.toLowerCase().trim()],
+    const [rows] = await pool.query(
+      "SELECT id, full_name, email, role, created_at FROM users ORDER BY created_at DESC",
     );
-    if (existingUser.length > 0)
-      return res.status(400).json({
-        status: "Error",
-        message: "An account with this email already exists.",
-      });
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const [result] = await pool.query(
-      "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, 'Requester')",
-      [fullName, email.toLowerCase().trim(), hashedPassword],
-    );
-    const [newUser] = await pool.query(
-      "SELECT id, name, email, role FROM users WHERE id = ?",
-      [result.insertId],
-    );
-    const user = {
-      id: newUser[0].id,
-      name: newUser[0].name,
-      email: newUser[0].email,
-      role: newUser[0].role,
-    };
-    const token = jwt.sign(user, JWT_SECRET, { expiresIn: "8h" });
-    res.json({ status: "Success", user, token });
+    res.json({ status: "Success", data: rows });
   } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: "Database error during registration.",
-    });
-  }
-});
-
-app.put("/api/users/:id/password", authenticateToken, async (req, res) => {
-  const { currentPassword, newPassword } = req.body;
-  if (String(req.params.id) !== String(req.user.id))
-    return res
-      .status(403)
-      .json({ status: "Error", message: "Unauthorized action." });
-  try {
-    const [users] = await pool.query(
-      "SELECT email, password FROM users WHERE id = ? LIMIT 1",
-      [req.params.id],
-    );
-    if (users.length === 0)
-      return res
-        .status(404)
-        .json({ status: "Error", message: "User not found." });
-    const validPassword = await bcrypt.compare(
-      currentPassword,
-      users[0].password,
-    );
-    if (!validPassword)
-      return res
-        .status(400)
-        .json({ status: "Error", message: "Incorrect current password." });
-    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-    await pool.query("UPDATE users SET password = ? WHERE email = ?", [
-      hashedNewPassword,
-      users[0].email,
-    ]);
-    res.json({ status: "Success", message: "Password successfully updated." });
-  } catch (error) {
-    res.status(500).json({ status: "Error", message: "Database error." });
+    res.status(500).json({ status: "Error" });
   }
 });
 
 app.put("/api/users/:id/role", authenticateToken, async (req, res) => {
-  if (req.user.role !== "Admin") {
-    return res
-      .status(403)
-      .json({ status: "Error", message: "Only Admins can change roles." });
-  }
-  const { role } = req.body;
   try {
+    if (req.user.role !== "Admin")
+      return res.status(403).json({ status: "Error" });
     await pool.query("UPDATE users SET role = ? WHERE id = ?", [
-      role,
+      req.body.role,
       req.params.id,
     ]);
-    res.json({ status: "Success", message: "Role successfully updated." });
+    res.json({ status: "Success" });
   } catch (error) {
-    console.error("Role Update Error:", error);
-    res.status(500).json({ status: "Error", message: "Database error." });
+    res.status(500).json({ status: "Error" });
   }
 });
 
-app.get("/api/users", authenticateToken, async (req, res) => {
-  try {
-    const [rows] = await pool.query(
-      "SELECT id, name AS full_name, email, role, created_at FROM users",
-    );
-    res.json({ status: "Success", data: rows });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ status: "Error", message: "Database fetch failed." });
-  }
-});
+// ==========================================
+// TRANSFER SUBMISSION ENDPOINTS
+// ==========================================
+const generateReqCode = () =>
+  "TRX-" + crypto.randomBytes(3).toString("hex").toUpperCase();
 
-app.get("/api/dashboard-stats", authenticateToken, async (req, res) => {
-  try {
-    const [pending] = await pool.query(
-      "SELECT COUNT(*) as count FROM transfer_requests WHERE status LIKE '%Pending%'",
-    );
-    const [completed] = await pool.query(
-      "SELECT COUNT(*) as count FROM transfer_requests WHERE status = 'COMPLETED'",
-    );
-    const [active] = await pool.query(
-      "SELECT COUNT(*) as count FROM transfer_requests WHERE status NOT LIKE '%Pending%' AND status NOT IN ('COMPLETED', 'REJECTED')",
-    );
-
-    const [facilityData] = await pool.query(
-      `SELECT COALESCE(destination_name, 'TBD') as name, COUNT(*) as value FROM transfer_requests WHERE destination_name != '' AND destination_name IS NOT NULL GROUP BY destination_name`,
-    );
-    const [statusData] = await pool.query(
-      `SELECT CASE WHEN status LIKE '%Pending%' THEN 'Pending' WHEN status = 'COMPLETED' THEN 'Completed' WHEN status = 'REJECTED' THEN 'Rejected' ELSE 'Active' END as name, COUNT(*) as Transfers FROM transfer_requests GROUP BY name`,
-    );
-
-    res.json({
-      status: "Success",
-      data: {
-        metrics: {
-          pending: pending[0].count,
-          active: active[0].count,
-          completed: completed[0].count,
-        },
-        facilityData:
-          facilityData.length > 0
-            ? facilityData
-            : [{ name: "No Data", value: 1 }],
-        statusData:
-          statusData.length > 0
-            ? statusData
-            : [{ name: "No Data", Transfers: 0 }],
-      },
-    });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ status: "Error", message: "Failed to fetch dashboard stats." });
-  }
-});
-
-// --- CORE DATA PIPELINE ---
 app.post(
   "/api/equipment-transfers",
   authenticateToken,
   upload.single("file"),
   async (req, res) => {
-    const {
-      originName,
-      destName,
-      shippingEarliest,
-      shippingLatest,
-      equipId,
-      projectCode,
-      hsCode,
-      unitValue,
-      description,
-      pallets,
-      weight,
-      dimensions,
-      carrier,
-    } = req.body;
-
-    const attachmentName = req.file ? req.file.originalname : null;
-    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : null;
-
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
-
     try {
-      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-      let randomStr = "";
-      for (let i = 0; i < 6; i++)
-        randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
-      const trackingNumber = `TRX-${randomStr}`;
+      const data = req.body;
+      const reqCode = generateReqCode();
 
-      const [transferResult] = await connection.query(
-        `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest, attachment_name, attachment_url, type, carrier) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?, ?, ?, 'Equipment', ?)`,
+      let attachName = null;
+      let attachUrl = null;
+      if (req.file) {
+        attachName = req.file.originalname;
+        attachUrl = `/uploads/${req.file.filename}`;
+      }
+
+      await pool.query(
+        `INSERT INTO transfers (
+        request_code, type, initiator_id, origin, dest, shipping_earliest, shipping_latest, 
+        pallets, pallet_positions, weight, dimensions, carrier, description, 
+        equip_id, project_code, hs_code, unit_value, attachment_name, attachment_url
+      ) VALUES (?, 'Equipment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          trackingNumber,
-          req.user.email,
-          originName,
-          destName,
-          shippingEarliest,
-          shippingLatest,
-          attachmentName,
-          attachmentUrl,
-          carrier,
+          reqCode,
+          req.user.id,
+          data.originName,
+          data.destName,
+          data.shippingEarliest,
+          data.shippingLatest,
+          data.pallets,
+          data.palletPositions,
+          data.weight,
+          data.dimensions,
+          data.carrier,
+          data.description,
+          data.equipId,
+          data.projectCode,
+          data.hsCode,
+          data.unitValue || 0,
+          attachName,
+          attachUrl,
         ],
       );
 
-      const newRequestId = transferResult.insertId;
-
-      await connection.query(
-        `INSERT INTO equipment_items (request_id, project_code, hs_code, description, pallets, weight, dimensions, unit_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          newRequestId,
-          projectCode,
-          hsCode,
-          description,
-          pallets,
-          weight,
-          dimensions,
-          unitValue || 0,
-        ],
+      const coordinatorEmail =
+        coordinatorMapping[data.originName] || coordinatorMapping["Default"];
+      await sendLogisticsEmail(
+        coordinatorEmail,
+        `New Equipment Quote Required: ${reqCode}`,
+        `A new equipment transfer originating from ${data.originName} has been submitted by ${req.user.full_name}. Please log in to source a rate.`,
       );
 
-      await connection.query(
-        `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Submitted', 'Initial equipment move request submitted.')`,
-        [newRequestId, req.user.email],
-      );
-
-      await connection.commit();
-
-      // NEW: Broadcast to all connected clients that the registry has changed!
-      io.emit("registryUpdate", {
-        message: "New equipment transfer submitted",
-      });
-
-      res.json({
-        status: "Success",
-        message: "Equipment Move successfully submitted!",
-        requestId: trackingNumber,
-      });
+      io.emit("registryUpdate", { newTransfer: true });
+      res.json({ status: "Success", requestId: reqCode });
     } catch (error) {
-      await connection.rollback();
-      res.status(500).json({
-        status: "Error",
-        message: "Failed to save the transfer request.",
-      });
-    } finally {
-      connection.release();
+      console.error(error);
+      res.status(500).json({ status: "Error" });
     }
   },
 );
@@ -509,273 +430,234 @@ app.post(
   authenticateToken,
   upload.single("file"),
   async (req, res) => {
-    const {
-      originName,
-      destName,
-      shippingEarliest,
-      shippingLatest,
-      materialNumber,
-      batchCode,
-      description,
-      pallets,
-      weight,
-      dimensions,
-      carrier,
-    } = req.body;
-
-    const attachmentName = req.file ? req.file.originalname : null;
-    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : null;
-
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
-
     try {
-      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-      let randomStr = "";
-      for (let i = 0; i < 6; i++)
-        randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
-      const trackingNumber = `TRX-${randomStr}`;
+      const data = req.body;
+      const reqCode = generateReqCode();
 
-      const [transferResult] = await connection.query(
-        `INSERT INTO transfer_requests (tracking_number, submitted_by, status, origin_name, destination_name, shipping_earliest, shipping_latest, attachment_name, attachment_url, type, carrier) VALUES (?, ?, 'Pending Executive Approval', ?, ?, ?, ?, ?, ?, 'Material', ?)`,
+      let attachName = null;
+      let attachUrl = null;
+      if (req.file) {
+        attachName = req.file.originalname;
+        attachUrl = `/uploads/${req.file.filename}`;
+      }
+
+      await pool.query(
+        `INSERT INTO transfers (
+        request_code, type, initiator_id, origin, dest, shipping_earliest, shipping_latest, 
+        pallets, pallet_positions, weight, dimensions, carrier, description, 
+        material_number, batch_code, attachment_name, attachment_url
+      ) VALUES (?, 'Material', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          trackingNumber,
-          req.user.email,
-          originName,
-          destName,
-          shippingEarliest,
-          shippingLatest,
-          attachmentName,
-          attachmentUrl,
-          carrier,
+          reqCode,
+          req.user.id,
+          data.originName,
+          data.destName,
+          data.shippingEarliest,
+          data.shippingLatest,
+          data.pallets,
+          data.palletPositions,
+          data.weight,
+          data.dimensions,
+          data.carrier,
+          data.description,
+          data.materialNumber,
+          data.batchCode,
+          attachName,
+          attachUrl,
         ],
       );
 
-      const newRequestId = transferResult.insertId;
-
-      await connection.query(
-        `INSERT INTO material_items (request_id, material_number, batch_code, description, pallets, weight, dimensions) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          newRequestId,
-          materialNumber,
-          batchCode,
-          description,
-          pallets,
-          weight,
-          dimensions,
-        ],
+      const coordinatorEmail =
+        coordinatorMapping[data.originName] || coordinatorMapping["Default"];
+      await sendLogisticsEmail(
+        coordinatorEmail,
+        `New Material Quote Required: ${reqCode}`,
+        `A new material transfer originating from ${data.originName} has been submitted by ${req.user.full_name}. Please log in to source a rate.`,
       );
 
-      await connection.query(
-        `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Submitted', 'Initial material move request submitted.')`,
-        [newRequestId, req.user.email],
-      );
-
-      await connection.commit();
-
-      // NEW: Broadcast to all connected clients
-      io.emit("registryUpdate", { message: "New material transfer submitted" });
-
-      res.json({
-        status: "Success",
-        message: "Material Move successfully submitted!",
-        requestId: trackingNumber,
-      });
+      io.emit("registryUpdate", { newTransfer: true });
+      res.json({ status: "Success", requestId: reqCode });
     } catch (error) {
-      await connection.rollback();
-      console.error("Material Endpoint Error:", error);
-      res.status(500).json({
-        status: "Error",
-        message: "Failed to save the material request.",
-      });
-    } finally {
-      connection.release();
+      console.error(error);
+      res.status(500).json({ status: "Error" });
     }
   },
 );
 
+// ==========================================
+// REGISTRY & DASHBOARD ENDPOINTS
+// ==========================================
 app.get("/api/transfers", authenticateToken, async (req, res) => {
   try {
-    const [rows] = await pool.query(`
-      SELECT 
-        COALESCE(t.tracking_number, CONCAT('TRX-', LPAD(t.id, 4, '0'))) AS id, 
-        t.id AS raw_id, 
-        COALESCE(t.type, 'Equipment') AS type, 
-        COALESCE(t.origin_name, 'TBD') AS origin, 
-        COALESCE(t.destination_name, 'TBD') AS dest, 
-        COALESCE(u.name, t.submitted_by) AS initiator, 
-        DATE_FORMAT(t.timestamp, '%b %d, %Y') AS date, 
-        t.status,
-        t.attachment_name AS attachmentName,
-        t.attachment_url AS attachmentUrl,
-        t.carrier,
-        t.shipping_earliest AS shippingEarliest,
-        t.shipping_latest AS shippingLatest,
-        
-        e.project_code AS projectCode,
-        e.hs_code AS hsCode,
-        e.description AS equipDescription,
-        e.pallets AS equipPallets,
-        e.weight AS equipWeight,
-        e.dimensions AS equipDimensions,
-        e.unit_value AS unitValue,
-        
-        m.material_number AS materialNumber,
-        m.batch_code AS batchCode,
-        m.description AS matDescription,
-        m.pallets AS matPallets,
-        m.weight AS matWeight,
-        m.dimensions AS matDimensions
-        
-      FROM transfer_requests t 
-      LEFT JOIN users u ON t.submitted_by = u.email 
-      LEFT JOIN equipment_items e ON t.id = e.request_id
-      LEFT JOIN material_items m ON t.id = m.request_id
-      ORDER BY t.timestamp DESC
-    `);
+    const [rows] = await pool.query(
+      `SELECT t.*, u.full_name as initiator 
+       FROM transfers t 
+       JOIN users u ON t.initiator_id = u.id 
+       ORDER BY t.created_at DESC`,
+    );
 
-    const formattedRows = rows.map((row) => {
-      const isEquipment = row.type === "Equipment";
-      return {
-        ...row,
-        description: isEquipment ? row.equipDescription : row.matDescription,
-        pallets: isEquipment ? row.equipPallets : row.matPallets,
-        weight: isEquipment ? row.equipWeight : row.matWeight,
-        dimensions: isEquipment ? row.equipDimensions : row.matDimensions,
-      };
+    const formattedData = rows.map((r) => ({
+      raw_id: r.id,
+      id: r.request_code,
+      type: r.type,
+      origin: r.origin,
+      dest: r.dest,
+      initiator: r.initiator,
+      date: new Date(r.created_at).toLocaleDateString(),
+      status: r.status,
+      shippingEarliest: r.shipping_earliest,
+      shippingLatest: r.shipping_latest,
+      carrier: r.carrier,
+      pallets: r.pallets,
+      palletPositions: r.pallet_positions,
+      weight: r.weight,
+      dimensions: r.dimensions,
+      equipId: r.equip_id,
+      projectCode: r.project_code,
+      hsCode: r.hs_code,
+      unitValue: r.unit_value,
+      materialNumber: r.material_number,
+      batchCode: r.batch_code,
+      description: r.description,
+      secured_rate: r.secured_rate,
+      attachmentName: r.attachment_name,
+      attachmentUrl: r.attachment_url,
+    }));
+
+    res.json({ status: "Success", data: formattedData });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: "Error" });
+  }
+});
+
+app.get("/api/dashboard-stats", authenticateToken, async (req, res) => {
+  try {
+    const [statusRows] = await pool.query(
+      "SELECT status, COUNT(*) as count FROM transfers GROUP BY status",
+    );
+    const [facilityRows] = await pool.query(
+      "SELECT origin, COUNT(*) as count FROM transfers GROUP BY origin",
+    );
+
+    let pending = 0,
+      active = 0,
+      completed = 0;
+    const statusData = [];
+
+    statusRows.forEach((row) => {
+      statusData.push({
+        name: row.status.replace(/_/g, " "),
+        Transfers: row.count,
+      });
+      if (row.status === "Carrier Booked") completed += row.count;
+      else if (
+        row.status === "Pending Logistics Quote" ||
+        row.status === "Pending Requester Approval"
+      )
+        pending += row.count;
+      else active += row.count;
     });
 
-    res.json({ status: "Success", data: formattedRows });
+    const facilityData = facilityRows.map((row) => ({
+      name: row.origin,
+      value: row.count,
+    }));
+
+    res.json({
+      status: "Success",
+      data: {
+        metrics: { pending, active, completed },
+        statusData: statusData.length
+          ? statusData
+          : [{ name: "No Data", Transfers: 0 }],
+        facilityData: facilityData.length
+          ? facilityData
+          : [{ name: "No Data", value: 1 }],
+      },
+    });
   } catch (error) {
-    console.error("Fetch Transfers Error:", error);
-    res
-      .status(500)
-      .json({ status: "Error", message: "Failed to fetch registry data." });
+    console.error(error);
+    res.status(500).json({ status: "Error" });
   }
 });
 
-// --- WORKFLOW & ACTIVITY FEED ---
-app.post("/api/transfers/:id/logs", authenticateToken, async (req, res) => {
-  const { text } = req.body;
-  const requestId = req.params.id;
-  try {
-    await pool.query(
-      `INSERT INTO approval_logs (request_id, approver_email, action, comments) VALUES (?, ?, 'Commented', ?)`,
-      [requestId, req.user.email, text],
-    );
-
-    // NEW: Broadcast comment update
-    io.emit("transferUpdate", { transferId: requestId, action: "Commented" });
-
-    res.json({ status: "Success", message: "Update posted successfully!" });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ status: "Error", message: "Failed to post update." });
-  }
-});
-
-app.get("/api/transfers/:id/logs", authenticateToken, async (req, res) => {
-  const requestId = req.params.id;
-  try {
-    const [logs] = await pool.query(
-      `
-      SELECT a.id, u.name AS user_name, a.action, a.comments AS text, DATE_FORMAT(a.timestamp, '%b %d, %Y - %h:%i %p') AS date
-      FROM approval_logs a LEFT JOIN users u ON a.approver_email = u.email WHERE a.request_id = ? ORDER BY a.timestamp DESC
-    `,
-      [requestId],
-    );
-    res.json({ status: "Success", data: logs });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ status: "Error", message: "Failed to fetch activity feed." });
-  }
-});
-
+// ==========================================
+// 4-STEP WORKFLOW & LOGGING ENDPOINTS
+// ==========================================
 app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
   const { status, comment, rate } = req.body;
-  const transferId = req.params.id;
+  const transferRawId = req.params.id;
 
   try {
-    // 1. Fetch current transfer details to know who to email
-    const [transferRows] = await connection.query(
-      `SELECT t.*, u.full_name as initiator_name, u.email as initiator_email,
-       e.origin, e.dest 
+    const [transferRows] = await pool.query(
+      `SELECT t.*, u.full_name as initiator_name, u.email as initiator_email
        FROM transfers t 
        JOIN users u ON t.initiator_id = u.id
-       LEFT JOIN equipment_items e ON t.id = e.request_id 
        WHERE t.id = ?`,
-      [transferId],
+      [transferRawId],
     );
 
     if (transferRows.length === 0)
-      return res.status(404).json({ status: "Error", message: "Not found" });
+      return res
+        .status(404)
+        .json({ status: "Error", message: "Transfer not found." });
     const transfer = transferRows[0];
-    const originFacility = transfer.origin; // We route based on Origin
+    const originFacility = transfer.origin;
+    const reqCode = transfer.request_code;
 
-    // 2. Update status (and rate if provided)
-    if (rate && rate.trim() !== "") {
-      await connection.query(
+    if (rate && rate.toString().trim() !== "") {
+      await pool.query(
         "UPDATE transfers SET status = ?, secured_rate = ? WHERE id = ?",
-        [status, parseFloat(rate), transferId],
+        [status, parseFloat(rate), transferRawId],
       );
     } else {
-      await connection.query("UPDATE transfers SET status = ? WHERE id = ?", [
+      await pool.query("UPDATE transfers SET status = ? WHERE id = ?", [
         status,
-        transferId,
+        transferRawId,
       ]);
     }
 
-    // 3. Log the action in Activity & Updates
     const actionText = rate
-      ? `Workflow Decision (${status}) - Rate Secured: $${rate}\nNotes: ${comment}`
-      : `Workflow Decision (${status})\nNotes: ${comment}`;
+      ? `Workflow Decision (${status}) - Rate Secured: $${rate}\nNotes: ${comment || "No comments provided."}`
+      : `Workflow Decision (${status})\nNotes: ${comment || "No comments provided."}`;
 
-    await connection.query(
+    await pool.query(
       "INSERT INTO logs (transfer_id, user_id, text) VALUES (?, ?, ?)",
-      [transferId, req.user.id, actionText],
+      [transferRawId, req.user.id, actionText],
     );
 
-    // 4. ROUTE THE EMAILS BASED ON THE NEW STATUS
     const coordinatorEmail =
       coordinatorMapping[originFacility] || coordinatorMapping["Default"];
     const senderEmail = transfer.initiator_email;
-    const reqCode = transfer.request_code; // e.g. TRX-4MQ7CS
 
-    if (status === "Pending Logistics Quote") {
-      // Only happens on initial creation, but placed here for reference
-      await sendLogisticsEmail(
-        coordinatorEmail,
-        `New Quote Required: ${reqCode}`,
-        `A new transfer request originating from ${originFacility} requires quoting.`,
-      );
-    } else if (status === "Pending Requester Approval") {
-      // Coordinator just submitted a rate. Email the Sender.
+    if (status === "Pending Requester Approval") {
       await sendLogisticsEmail(
         senderEmail,
         `Action Required: Quote Ready for ${reqCode}`,
-        `A shipping rate of $${rate} has been secured for your transfer. Please log in to approve or reject this cost.`,
+        `A shipping rate of $${rate} has been secured for your transfer by ${req.user.full_name}. Please log in to approve or reject this cost.`,
       );
     } else if (status === "Approved - Pending Booking") {
-      // Sender approved the rate. Email the Coordinator.
       await sendLogisticsEmail(
         coordinatorEmail,
         `Quote Approved: Book Carrier for ${reqCode}`,
         `The sender (${transfer.initiator_name}) has approved the rate. Please proceed with booking the truck offline.`,
       );
     } else if (status === "Carrier Booked") {
-      // Coordinator booked the truck. Email the Sender.
       await sendLogisticsEmail(
         senderEmail,
         `Carrier Booked: ${reqCode}`,
         `Your transfer has been successfully booked by logistics and is now complete in the system.`,
       );
+    } else if (status === "REJECTED") {
+      await sendLogisticsEmail(
+        coordinatorEmail,
+        `Quote Rejected: ${reqCode}`,
+        `The sender (${transfer.initiator_name}) has rejected the quote. Review notes in the portal.`,
+      );
     }
 
-    // 5. Fire live websocket update
-    io.emit("registryUpdate", { transferId, newStatus: status });
-
+    io.emit("registryUpdate", { transferId: transferRawId, newStatus: status });
     res.json({ status: "Success" });
   } catch (error) {
     console.error(error);
@@ -785,8 +667,47 @@ app.put("/api/transfers/:id/status", authenticateToken, async (req, res) => {
   }
 });
 
-// NEW: Use server.listen instead of app.listen to support WebSockets
+app.get("/api/transfers/:id/logs", authenticateToken, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.id, l.text, l.created_at, u.full_name as user_name 
+       FROM logs l JOIN users u ON l.user_id = u.id 
+       WHERE l.transfer_id = ? ORDER BY l.created_at ASC`,
+      [req.params.id],
+    );
+
+    const formatted = rows.map((r) => ({
+      id: r.id,
+      text: r.text,
+      user_name: r.user_name,
+      date: new Date(r.created_at).toLocaleString(),
+    }));
+
+    res.json({ status: "Success", data: formatted });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: "Error" });
+  }
+});
+
+app.post("/api/transfers/:id/logs", authenticateToken, async (req, res) => {
+  try {
+    await pool.query(
+      "INSERT INTO logs (transfer_id, user_id, text) VALUES (?, ?, ?)",
+      [req.params.id, req.user.id, req.body.text],
+    );
+    io.emit("transferUpdate", {
+      action: "Commented",
+      transferId: req.params.id,
+    });
+    res.json({ status: "Success" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: "Error" });
+  }
+});
+
 server.listen(PORT, async () => {
-  console.log(`Logistics API & WebSocket running on port ${PORT}`);
+  console.log(`Backend API with Live Sockets running on port ${PORT}`);
   await initializeDatabase();
 });
