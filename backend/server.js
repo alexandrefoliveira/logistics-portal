@@ -206,16 +206,29 @@ async function initializeDatabase() {
     const teamPass = await bcrypt.hash("IceRiver@2026!", 10);
 
     const teamMembers = [
+      // Core Project Contacts
       [
         "Alexandre Oliveira",
         "aoliveira@iceriversprings.com",
         adminPass,
         "Admin",
       ],
-      ["Dominick", "dominick@iceriversprings.com", teamPass, "Requester"],
-      ["Kevin", "kevin@iceriversprings.com", teamPass, "Requester"],
-      ["Nathan", "nathan@iceriversprings.com", teamPass, "Requester"],
-      ["Stacy", "stacy@iceriversprings.com", teamPass, "Requester"],
+      [
+        "Dominick Farrell",
+        "DFarrell@iceriversprings.com",
+        teamPass,
+        "Management",
+      ],
+      ["Kevin Solski", "KSolski@iceriversprings.com", teamPass, "Requester"],
+      [
+        "Nathan Hawkins",
+        "NHawkins@bluemountainplastics.com",
+        teamPass,
+        "Requester",
+      ],
+      ["Stacy Draper", "sdraper@iceriversprings.com", teamPass, "Requester"],
+
+      // Contacts imported from Project Contacts.xlsx
       ["Livia Lima", "llima@iceriversprings.com", teamPass, "Requester"],
       ["Colin Duncan", "cduncan@iceriversprings.com", teamPass, "Requester"],
       ["Jennifer Horner", "jhorner@bmpextrusion.com", teamPass, "Requester"],
@@ -254,12 +267,12 @@ async function initializeDatabase() {
       ["Vismay Soni", "vsoni@iceriversprings.com", teamPass, "Requester"],
       ["Renan Lucena", "rlucena@crplastics.com", teamPass, "Requester"],
       ["Durid Awaad", "dawaad@iceriversprings.com", teamPass, "Requester"],
-      ["Bill Harper", "bharper@iceriversprings.com", teamPass, "Requester"],
+      ["Bill Harper", "bharper@iceriversprings.com", teamPass, "Management"],
       [
         "Logistics Group",
         "logistics@iceriversprings.com",
         teamPass,
-        "Requester",
+        "Logistics Coordinator",
       ],
     ];
 
